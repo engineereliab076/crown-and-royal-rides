@@ -17,7 +17,8 @@ strings, IP addresses, or internal cloud identifiers.
 | Database             | PostgreSQL 16                                     |
 | Unit/integration     | Vitest 4                                          |
 | End-to-end           | Playwright (Desktop Chromium, Pixel 5, iPhone 13) |
-| Hosting              | Vercel (Preview only in Phase 0)                  |
+| Hosting              | Vercel (GitHub-connected; Production Ready)       |
+| Version control / CI | GitHub repository + GitHub Actions (remote CI)    |
 | Managed database     | Neon (AWS Frankfurt, `eu-central-1`)              |
 
 Build pipeline is Webpack production build:
@@ -155,9 +156,10 @@ repository and discarded.
 failures; Frankfurt had the lowest median and the lowest p95, and it aligns with
 the planned Vercel function region.
 
-**Actual Neon query benchmark**: <PENDING — see note>. If performed, record the
-median / p95 / min / max of ≥ 10 sequential `SELECT 1` round trips here. If not
-performed, state that only the regional network-path benchmark was completed.
+**Actual Neon query benchmark**: not performed. Only the regional network-path
+benchmark above was completed. A live `SELECT 1` benchmark was deliberately
+skipped so that no Neon connection string had to be read back, printed, or
+stored. The chosen region stands on the network-path evidence.
 
 **Limitations**: measured over a mobile hotspot on a single day; absolute values
 reflect that access network. The AWS HTTPS path is a proxy for network distance,
@@ -180,41 +182,37 @@ Recorded names and scopes only — no internal IDs, connection strings, or token
 | Neon project (human name)   | crown-and-royal-rides                                                      |
 | Neon PostgreSQL version     | 16                                                                         |
 | Neon region                 | AWS Frankfurt (`eu-central-1`)                                             |
-| Vercel project (human name) | crown-and-royal-rides                                                      |
-| Public preview URL / alias  | <PENDING — set after first preview deployment>                             |
-| Vercel Preview env vars set | `NEXT_PUBLIC_APP_URL`, `APP_ORIGIN`, `DATABASE_URL`, `DIRECT_DATABASE_URL` |
+| Vercel project (human name) | crown-and-royal-rides (connected to the GitHub repository)                 |
+| Production branch           | `main`                                                                     |
+| Production deployment       | Ready                                                                      |
+| Public production URL       | https://crown-and-royal-rides.vercel.app                                   |
+| Vercel env vars set         | `NEXT_PUBLIC_APP_URL`, `APP_ORIGIN`, `DATABASE_URL`, `DIRECT_DATABASE_URL` |
 
-Not set in Phase 0 (unused by the static app): `AUTH_URL`, `AUTH_SECRET`,
+`NEXT_PUBLIC_APP_URL` and `APP_ORIGIN` use the public Vercel origin;
+`DATABASE_URL` holds the Neon pooled connection and `DIRECT_DATABASE_URL` the
+Neon direct connection. Values are stored only in Vercel/Neon and never appear
+here.
+
+Not set (unused by the static app): `AUTH_URL`, `AUTH_SECRET`,
 `IP_HASH_SECRET`, `CRON_SECRET`, `SEED_OWNER_*`, `SENTRY_AUTH_TOKEN`, and the
 Cloudinary / Resend / Upstash / Sentry runtime groups. Vercel's system variables
 (`VERCEL_ENV`, `NODE_ENV`) are managed by Vercel and not set manually.
 
 ## Deployment
 
-Local Vercel CLI preview workflow (no GitHub connection, no Production deploy):
+Deployments are driven by the GitHub-connected Vercel project. No local
+`vercel deploy` is required for normal operation.
 
-```bash
-# 1. Authenticate (opens a browser; never paste tokens into a terminal you share)
-vercel login
-
-# 2. Link the local workspace to the Vercel project (no Git connection)
-vercel link
-
-# 3. Create a Preview deployment (NO --prod flag)
-vercel deploy
-
-# 4. If a stable preview alias exists, point it at the new deployment
-vercel alias set <deployment-url> <preview-alias>
-
-# 5. Verify (see Phase 0 verification)
-```
-
-- Preview vs Production: Phase 0 creates **Preview only**. Never pass `--prod`.
-- Preview environment variables are entered through the Vercel dashboard
-  (Project → Settings → Environment Variables, scope = Preview) to keep secrets
-  out of terminal history.
-- The generated `*.vercel.app` deployment URL is public and non-secret; the
-  `.vercel/` link metadata is git-ignored and is not authored source.
+- **Production**: pushing to the `main` branch triggers an automatic Vercel
+  Production deployment. Current Production status is **Ready** at
+  https://crown-and-royal-rides.vercel.app.
+- **Preview**: pull requests and non-`main` branches produce automatic Vercel
+  Preview deployments with their own generated `*.vercel.app` URLs.
+- Environment variables are managed in the Vercel dashboard
+  (Project → Settings → Environment Variables), scoped per environment, so
+  secrets never enter terminal history or the repository.
+- Source changes are always authored locally in VS Code and reach Vercel only
+  through GitHub. Generated `*.vercel.app` URLs are public and non-secret.
 
 ## CI status
 
@@ -223,36 +221,36 @@ vercel alias set <deployment-url> <preview-alias>
     build.
   - `e2e`: install → Playwright browsers → build → end-to-end tests.
 - All local equivalents of these steps pass (see Phase 0 verification).
-- **GitHub Actions has not been executed remotely.** Reason: project policy
-  forbids all GitHub operations (no repository, remote, or push exists).
-- Activating remote CI requires future, explicit authorization to use GitHub.
-
-This runbook does not claim CI "is running" — only that the workflow is defined
-and its steps pass locally.
+- **Remote CI is verified.** GitHub Actions has executed remotely and both jobs
+  passed: `quality` ✓ and `e2e` ✓.
+- GitHub is used only for version control, CI, and Vercel deployment. All source
+  changes are authored locally in VS Code and pushed to GitHub for those
+  purposes.
 
 ## Phase 0 verification
 
 Dated results — **2026-08-10** (local Node 26.2.0, pnpm 11.9.0):
 
-| Check                              | Result                                      |
-| ---------------------------------- | ------------------------------------------- |
-| `pnpm install --frozen-lockfile`   | Pass (lockfile up to date)                  |
-| `pnpm format:check`                | Pass                                        |
-| `pnpm typecheck`                   | Pass                                        |
-| `pnpm lint`                        | Pass                                        |
-| Unit tests                         | 394 passed                                  |
-| Integration tests                  | Empty (intentional, `--passWithNoTests`)    |
-| `pnpm test` (all Vitest)           | 394 passed                                  |
-| `pnpm build`                       | Pass                                        |
-| E2E (dev path)                     | 27 passed                                   |
-| E2E (`CI=true`, `next start` path) | 27 passed                                   |
-| Boundary-lint negative test        | Fails as expected (`no-restricted-imports`) |
-| Environment key audit              | 26 keys, exact set equality                 |
-| Secret scan                        | Clean (only test placeholders)              |
-| Preview deployment                 | <PENDING — completed in cloud step>         |
-| Docker (static compose validation) | Valid                                       |
-| Docker (runtime)                   | Blocked — daemon not running                |
-| Remote GitHub Actions              | Deferred by explicit project policy         |
+| Check                              | Result                                           |
+| ---------------------------------- | ------------------------------------------------ |
+| `pnpm install --frozen-lockfile`   | Pass (lockfile up to date)                       |
+| `pnpm format:check`                | Pass                                             |
+| `pnpm typecheck`                   | Pass                                             |
+| `pnpm lint`                        | Pass                                             |
+| Unit tests                         | 394 passed                                       |
+| Integration tests                  | Empty (intentional, `--passWithNoTests`)         |
+| `pnpm test` (all Vitest)           | 394 passed                                       |
+| `pnpm build`                       | Pass                                             |
+| E2E (dev path)                     | 27 passed                                        |
+| E2E (`CI=true`, `next start` path) | 27 passed                                        |
+| Boundary-lint negative test        | Fails as expected (`no-restricted-imports`)      |
+| Environment key audit              | 26 keys, exact set equality                      |
+| Secret scan                        | Clean (only test placeholders)                   |
+| Vercel Production deployment       | Ready (https://crown-and-royal-rides.vercel.app) |
+| Remote CI — `quality` job          | Passed                                           |
+| Remote CI — `e2e` job              | Passed                                           |
+| Docker (static compose validation) | Valid                                            |
+| Docker (runtime)                   | Blocked — daemon not running                     |
 
 ## Troubleshooting
 

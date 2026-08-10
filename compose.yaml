@@ -1,0 +1,31 @@
+# Local development database for Crown and Royal Rides.
+#
+# This Compose file provisions a local PostgreSQL 16 instance for development
+# only. The credentials below are intentionally weak, non-production values.
+# Never reuse them in preview, production, or any deployed environment.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: crown_royal_rides
+      POSTGRES_USER: crown_royal_rides
+      # Local development password only — not a real secret.
+      POSTGRES_PASSWORD: crown_royal_rides_dev
+    ports:
+      # Host port defaults to 5432 but can be overridden with POSTGRES_PORT
+      # if 5432 is already in use. When overridden, update DATABASE_URL and
+      # DIRECT_DATABASE_URL in your local env file to match.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `$$` escapes to a literal `$` so the variables expand inside the
+      # container using its own configured user and database.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:

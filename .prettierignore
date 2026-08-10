@@ -1,0 +1,23 @@
+# Dependencies
+node_modules
+
+# Build output and caches
+.next
+out
+build
+coverage
+playwright-report
+test-results
+blob-report
+*.tsbuildinfo
+
+# Environment files (keep the committed example formatted)
+.env
+.env.*
+!.env.example
+
+# Static and binary assets
+public
+
+# Package manager lockfiles (owned by the package manager)
+pnpm-lock.yaml

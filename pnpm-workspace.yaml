@@ -1,3 +1,20 @@
+# pnpm build-script allowlist (pnpm 11 auto-generates this file when a
+# dependency ships an install/build script).
+#
+# Only these first-party Prisma packages are explicitly permitted to run their
+# install scripts. @prisma/engines' postinstall provisions the schema-engine
+# binary used by the migration CLI; the prisma CLI's script is its own setup.
+# sharp and unrs-resolver are transitive native builds pnpm recognises as safe.
 allowBuilds:
+  "@prisma/engines": true
+  # Phase 1 does not upload source maps, so the optional Sentry CLI binary is
+  # explicitly denied instead of approving its download/install script.
+  "@sentry/cli": false
+  # Required by the reviewed tsx seed runner; the script selects and verifies
+  # the platform-specific esbuild binary against the package's SHA-256 table.
+  esbuild: true
+  prisma: true
   sharp: true
   unrs-resolver: true
+minimumReleaseAgeExclude:
+  - resend@6.19.0

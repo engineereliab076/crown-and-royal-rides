@@ -1,0 +1,144 @@
+// Crown and Royal Rides — Prisma schema (Phase 1, Group 1: foundation).
+//
+// This schema defines ONLY the genuinely shared foundation tables. Feature
+// tables (vehicles, vehicle images, inquiries, packages, contact events,
+// package/vehicle joins) are intentionally absent and arrive in later phases:
+// vehicles in Phase 3, inquiry request fields in Phase 8, rental packages in
+// Phase 9. See docs/runbook.md → "Database migrations".
+//
+// Database identifiers are snake_case (enforced with @map / @@map); Prisma model
+// and field identifiers stay idiomatic PascalCase/camelCase.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  // Prisma 7 no longer accepts `url`/`directUrl` here. The pooled runtime
+  // connection (DATABASE_URL) is supplied to PrismaClient via the pg driver
+  // adapter in Group 2; the direct migration connection (DIRECT_DATABASE_URL)
+  // is configured for migration commands in prisma.config.ts.
+  provider = "postgresql"
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+/// Administrative role. Owners have full control; managers are scoped down by
+/// the application authorization layer.
+enum AdminRole {
+  owner
+  manager
+
+  @@map("admin_role")
+}
+
+/// Publication lifecycle shared by later vehicle and package feature tables.
+/// Declared now because it is a genuinely shared foundation type, even though
+/// the tables that reference it do not exist yet.
+enum ListingState {
+  draft
+  published
+  archived
+
+  @@map("listing_state")
+}
+
+// ── Models ───────────────────────────────────────────────────────────────────
+
+/// Administrative user accounts. Passwords are stored only as one-way hashes.
+model AdminUser {
+  id                 String    @id @default(uuid()) @db.Uuid
+  email              String    @unique @db.Citext
+  passwordHash       String    @map("password_hash")
+  name               String
+  role               AdminRole
+  isActive           Boolean   @default(true) @map("is_active")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  sessionVersion     Int       @default(1) @map("session_version")
+  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdById        String?   @map("created_by") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Self-relation: who created this account (nullable; SET NULL on creator
+  // deletion so audit history is preserved without cascading deletes).
+  createdBy    AdminUser?  @relation("AdminUserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  createdUsers AdminUser[] @relation("AdminUserCreatedBy")
+
+  // Back-relations for other tables that reference this account.
+  auditLogEntries AdminAuditLog[]    @relation("AdminAuditLogActor")
+  updatedSettings BusinessSettings[] @relation("BusinessSettingsUpdatedBy")
+
+  @@map("admin_users")
+}
+
+/// Append-only administrative audit trail. Application convention: never
+/// updated or deleted. No update/delete behavior is modeled in this group.
+model AdminAuditLog {
+  id         BigInt   @id @default(autoincrement())
+  actorId    String?  @map("actor_id") @db.Uuid
+  action     String
+  targetType String   @map("target_type")
+  targetId   String   @map("target_id")
+  metadata   Json     @default("{}") @db.JsonB
+  ipHash     String   @map("ip_hash")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  actor AdminUser? @relation("AdminAuditLogActor", fields: [actorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([createdAt(sort: Desc)], map: "admin_audit_log_created_at_idx")
+  @@index([actorId], map: "admin_audit_log_actor_id_idx")
+  @@map("admin_audit_log")
+}
+
+/// Vehicle brands. Both name and slug are globally unique.
+model Brand {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  slug      String   @unique
+  logoUrl   String?  @map("logo_url")
+  sortOrder Int      @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("brands")
+}
+
+/// Single-row business configuration. Enforced to exactly one row (id = 1) by a
+/// named CHECK constraint added in the migration. The row itself is seeded in
+/// Group 4, not here.
+model BusinessSettings {
+  id                        Int      @id @db.SmallInt
+  businessName              String   @map("business_name")
+  whatsappNumber            String   @map("whatsapp_number")
+  primaryPhone              String   @map("primary_phone")
+  secondaryPhone            String?  @map("secondary_phone")
+  email                     String
+  address                   String
+  openingHours              Json     @map("opening_hours") @db.JsonB
+  socialLinks               Json     @map("social_links") @db.JsonB
+  heroHeadline              String   @map("hero_headline")
+  heroSubheadline           String   @map("hero_subheadline")
+  inquiryNotificationEmails String[] @map("inquiry_notification_emails")
+  updatedAt                 DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedById               String?  @map("updated_by") @db.Uuid
+
+  updatedBy AdminUser? @relation("BusinessSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@map("business_settings")
+}
+
+/// Durable queue of remote media assets awaiting deletion. Provider-agnostic:
+/// no Cloudinary SDK code or provider-specific foreign keys live here.
+model MediaDeletionQueue {
+  id              BigInt    @id @default(autoincrement())
+  publicId        String    @map("public_id")
+  ownerType       String    @map("owner_type")
+  attempts        Int       @default(0)
+  lastError       String?   @map("last_error")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastAttemptedAt DateTime? @map("last_attempted_at") @db.Timestamptz(6)
+
+  @@map("media_deletion_queue")
+}

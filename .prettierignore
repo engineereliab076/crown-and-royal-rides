@@ -21,3 +21,6 @@ public
 
 # Package manager lockfiles (owned by the package manager)
 pnpm-lock.yaml
+
+# Generated Prisma Client (regenerated on install/build)
+src/generated

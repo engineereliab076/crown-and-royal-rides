@@ -56,6 +56,15 @@ function exemptOptions(errorReporter?: ErrorReporter) {
   };
 }
 
+function reporterWith(
+  captureException: ErrorReporter["captureException"],
+): ErrorReporter {
+  return {
+    captureException,
+    captureMessage: vi.fn<ErrorReporter["captureMessage"]>(),
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -200,7 +209,7 @@ describe("origin validation", () => {
     const captureException = vi.fn<ErrorReporter["captureException"]>();
     const wrapped = withRouteHandler(
       handler,
-      requiredOptions({ captureException }),
+      requiredOptions(reporterWith(captureException)),
     );
     const headers = new Headers();
 
@@ -480,15 +489,18 @@ describe("successful responses", () => {
 describe("expected AppError responses", () => {
   it("preserves safe fields, details, status, and custom headers", async () => {
     const captureException = vi.fn<ErrorReporter["captureException"]>();
-    const wrapped = withRouteHandler(() => {
-      throw new AppError({
-        status: 429,
-        code: "RATE_LIMITED",
-        message: "  Please try again  ",
-        details: { retryable: true, waitSeconds: 60 },
-        headers: { "Retry-After": "60" },
-      });
-    }, exemptOptions({ captureException }));
+    const wrapped = withRouteHandler(
+      () => {
+        throw new AppError({
+          status: 429,
+          code: "RATE_LIMITED",
+          message: "  Please try again  ",
+          details: { retryable: true, waitSeconds: 60 },
+          headers: { "Retry-After": "60" },
+        });
+      },
+      exemptOptions(reporterWith(captureException)),
+    );
 
     const response = await wrapped(
       new Request("https://service.test/limited"),
@@ -564,9 +576,12 @@ describe("unexpected errors", () => {
     "reports the exact %s and returns a controlled 500",
     async (_name, thrown) => {
       const captureException = vi.fn<ErrorReporter["captureException"]>();
-      const wrapped = withRouteHandler(() => {
-        throw thrown;
-      }, exemptOptions({ captureException }));
+      const wrapped = withRouteHandler(
+        () => {
+          throw thrown;
+        },
+        exemptOptions(reporterWith(captureException)),
+      );
 
       const response = await wrapped(
         new Request("https://service.test/orders/123?customer=private"),
@@ -600,7 +615,7 @@ describe("unexpected errors", () => {
     const captureException = vi.fn<ErrorReporter["captureException"]>();
     const wrapped = withRouteHandler(
       async () => Promise.reject(error),
-      exemptOptions({ captureException }),
+      exemptOptions(reporterWith(captureException)),
     );
 
     const response = await wrapped(
@@ -625,7 +640,7 @@ describe("unexpected errors", () => {
     const captureException = vi.fn<ErrorReporter["captureException"]>();
     const wrapped = Reflect.apply(withRouteHandler, undefined, [
       () => "not a response",
-      exemptOptions({ captureException }),
+      exemptOptions(reporterWith(captureException)),
     ]);
     const result: unknown = await Reflect.apply(wrapped, undefined, [
       new Request("https://service.test/invalid-result"),
@@ -654,9 +669,12 @@ describe("unexpected errors", () => {
     const captureException = vi.fn<ErrorReporter["captureException"]>(
       () => reporting,
     );
-    const wrapped = withRouteHandler(() => {
-      throw new Error("private");
-    }, exemptOptions({ captureException }));
+    const wrapped = withRouteHandler(
+      () => {
+        throw new Error("private");
+      },
+      exemptOptions(reporterWith(captureException)),
+    );
     let responseSettled = false;
     const responsePromise = wrapped(
       new Request("https://service.test/fail"),
@@ -726,9 +744,12 @@ describe("reporter failures", () => {
     "swallows a %s and retains the safe response",
     async (_name, report) => {
       const captureException = vi.fn<ErrorReporter["captureException"]>(report);
-      const wrapped = withRouteHandler(() => {
-        throw new Error("original private failure");
-      }, exemptOptions({ captureException }));
+      const wrapped = withRouteHandler(
+        () => {
+          throw new Error("original private failure");
+        },
+        exemptOptions(reporterWith(captureException)),
+      );
 
       const response = await wrapped(
         new Request("https://service.test/fail"),

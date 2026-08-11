@@ -1,0 +1,203 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { parseEnv, type Environment } from "@/lib/env.schema";
+import {
+  createIntegrationContainer,
+  getIntegrationContainer,
+  resetIntegrationContainerForTests,
+  type IntegrationContainerDependencies,
+} from "@/server/integrations/container";
+import { InMemoryEmailSender } from "@/server/integrations/email-sender/in-memory";
+import { ResendEmailSender } from "@/server/integrations/email-sender/resend";
+import { InMemoryErrorReporter } from "@/server/integrations/error-reporter/in-memory";
+import { SentryErrorReporter } from "@/server/integrations/error-reporter/sentry";
+import { CloudinaryMediaStorage } from "@/server/integrations/media-storage/cloudinary";
+import { InMemoryMediaStorage } from "@/server/integrations/media-storage/in-memory";
+import { InMemoryRateLimiter } from "@/server/integrations/rate-limiter/in-memory";
+import { UpstashRateLimiter } from "@/server/integrations/rate-limiter/upstash";
+
+function providerGroups(environment: "dev" | "preview" | "prod") {
+  const deployed = environment !== "dev";
+  const sentryEnvironment =
+    environment === "prod"
+      ? "production"
+      : environment === "dev"
+        ? "development"
+        : "preview";
+  return {
+    ...(deployed
+      ? {
+          VERCEL_ENV: environment === "prod" ? "production" : "preview",
+          NEXT_PUBLIC_APP_URL: "https://app.example.test",
+          APP_ORIGIN: "https://app.example.test",
+        }
+      : {}),
+    CLOUDINARY_CLOUD_NAME: "demo-cloud",
+    CLOUDINARY_API_KEY: "fake-cloudinary-key",
+    CLOUDINARY_API_SECRET: "fake-cloudinary-secret",
+    CLOUDINARY_FOLDER_PREFIX: environment,
+    RESEND_API_KEY: "re_fake_key",
+    EMAIL_FROM: "no-reply@example.test",
+    INQUIRY_NOTIFICATION_FALLBACK: "fallback@example.test",
+    UPSTASH_REDIS_REST_URL: "https://redis.example.test",
+    UPSTASH_REDIS_REST_TOKEN: "fake-upstash-token",
+    RATE_LIMIT_NAMESPACE: `${environment === "prod" ? "prod" : environment}:`,
+    SENTRY_DSN: "https://public-key@sentry.example.test/1",
+    NEXT_PUBLIC_SENTRY_DSN: "https://public-key@sentry.example.test/1",
+    SENTRY_ENVIRONMENT: sentryEnvironment,
+  };
+}
+
+function fakeDependencies(): IntegrationContainerDependencies {
+  return {
+    cloudinary: {
+      sign: vi.fn(() => "0".repeat(40)),
+      destroy: vi.fn(async () => ({ result: "ok" })),
+      url: vi.fn(
+        (publicId) =>
+          `https://res.cloudinary.com/demo-cloud/image/upload/${publicId}`,
+      ),
+    },
+    resend: {
+      send: vi.fn(async () => ({ data: { id: "email-1" }, error: null })),
+    },
+    upstashLimiterFactory: vi.fn(({ limit, windowMs }) => ({
+      limit: vi.fn(async () => ({
+        success: true,
+        limit,
+        remaining: limit - 1,
+        reset: windowMs,
+      })),
+    })),
+    sentry: {
+      withIsolationScope: vi.fn((callback) =>
+        callback({ setTag: vi.fn(), setContext: vi.fn() }),
+      ),
+      captureException: vi.fn(),
+      captureMessage: vi.fn(),
+    },
+  };
+}
+
+describe("integration composition root", () => {
+  beforeEach(() => resetIntegrationContainerForTests());
+
+  it("selects only in-memory adapters in NODE_ENV=test", () => {
+    const dependencies = fakeDependencies();
+    const container = createIntegrationContainer(
+      parseEnv({ NODE_ENV: "test", ...providerGroups("dev") }),
+      dependencies,
+    );
+
+    expect(container.mediaStorage).toBeInstanceOf(InMemoryMediaStorage);
+    expect(container.emailSender).toBeInstanceOf(InMemoryEmailSender);
+    expect(container.rateLimiter).toBeInstanceOf(InMemoryRateLimiter);
+    expect(container.errorReporter).toBeInstanceOf(InMemoryErrorReporter);
+    expect(container.mode).toEqual({
+      deployment: "test",
+      providers: {
+        mediaStorage: "in-memory",
+        emailSender: "in-memory",
+        rateLimiter: "in-memory",
+        errorReporter: "in-memory",
+      },
+    });
+    expect(dependencies.upstashLimiterFactory).not.toHaveBeenCalled();
+    expect(dependencies.cloudinary?.sign).not.toHaveBeenCalled();
+    expect(dependencies.resend?.send).not.toHaveBeenCalled();
+    expect(dependencies.sentry?.captureException).not.toHaveBeenCalled();
+  });
+
+  it("uses safe doubles in local development when provider groups are absent", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ NODE_ENV: "development" }),
+    );
+    expect(container.mediaStorage).toBeInstanceOf(InMemoryMediaStorage);
+    expect(container.emailSender).toBeInstanceOf(InMemoryEmailSender);
+    expect(container.rateLimiter).toBeInstanceOf(InMemoryRateLimiter);
+    expect(container.errorReporter).toBeInstanceOf(InMemoryErrorReporter);
+    expect(container.mode.deployment).toBe("local");
+  });
+
+  it("selects real adapter classes locally with complete fake groups", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ NODE_ENV: "development", ...providerGroups("dev") }),
+      fakeDependencies(),
+    );
+    expect(container.mediaStorage).toBeInstanceOf(CloudinaryMediaStorage);
+    expect(container.emailSender).toBeInstanceOf(ResendEmailSender);
+    expect(container.rateLimiter).toBeInstanceOf(UpstashRateLimiter);
+    expect(container.errorReporter).toBeInstanceOf(SentryErrorReporter);
+    expect(container.mode.providers).toEqual({
+      mediaStorage: "cloudinary",
+      emailSender: "resend",
+      rateLimiter: "upstash",
+      errorReporter: "sentry",
+    });
+  });
+
+  it("leaves partial-group rejection to the environment parser", () => {
+    expect(() =>
+      parseEnv({ NODE_ENV: "development", RESEND_API_KEY: "re_fake" }),
+    ).toThrow(/EMAIL_FROM/);
+  });
+
+  it.each(["preview", "production"] as const)(
+    "fails safely when %s is missing provider groups",
+    (vercelEnvironment) => {
+      const environment = parseEnv({
+        NODE_ENV: "production",
+        VERCEL_ENV: vercelEnvironment,
+        NEXT_PUBLIC_APP_URL: "https://app.example.test",
+        APP_ORIGIN: "https://app.example.test",
+      });
+      expect(() => createIntegrationContainer(environment)).toThrow(
+        /CLOUDINARY_CLOUD_NAME/,
+      );
+    },
+  );
+
+  it.each([
+    ["preview", "preview"],
+    ["production", "prod"],
+  ] as const)("selects all real adapters in %s", (_label, folder) => {
+    const container = createIntegrationContainer(
+      parseEnv({ NODE_ENV: "production", ...providerGroups(folder) }),
+      fakeDependencies(),
+    );
+    expect(container.mode.providers).toEqual({
+      mediaStorage: "cloudinary",
+      emailSender: "resend",
+      rateLimiter: "upstash",
+      errorReporter: "sentry",
+    });
+  });
+
+  it("never includes supplied secret values in factory errors or descriptors", () => {
+    const marker = "SECRET_MARKER_MUST_NOT_LEAK";
+    const partial: Environment = {
+      ...parseEnv({ NODE_ENV: "development" }),
+      CLOUDINARY_API_SECRET: marker,
+    };
+    expect(() => createIntegrationContainer(partial)).toThrow(
+      /CLOUDINARY_CLOUD_NAME/,
+    );
+    try {
+      createIntegrationContainer(partial);
+    } catch (error) {
+      expect(String(error)).not.toContain(marker);
+    }
+    expect(
+      JSON.stringify(
+        createIntegrationContainer(parseEnv({ NODE_ENV: "development" })).mode,
+      ),
+    ).not.toContain(marker);
+  });
+
+  it("reuses the lazy process singleton and supports a test-only reset", () => {
+    const first = getIntegrationContainer();
+    expect(getIntegrationContainer()).toBe(first);
+    resetIntegrationContainerForTests();
+    expect(getIntegrationContainer()).not.toBe(first);
+  });
+});

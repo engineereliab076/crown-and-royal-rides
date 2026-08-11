@@ -1,6 +1,7 @@
 import { createCorrelationId } from "@/lib/correlation";
+import type { ErrorReporter } from "@/server/integrations/error-reporter/interface";
+import { noopErrorReporter } from "@/server/integrations/error-reporter/noop";
 import { AppError, isAppError, type ErrorDetails } from "@/server/http/errors";
-import { noopErrorReporter, type ErrorReporter } from "@/server/http/reporter";
 
 export interface RouteExecutionContext {
   correlationId: string;

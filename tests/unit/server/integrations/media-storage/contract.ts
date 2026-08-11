@@ -1,0 +1,132 @@
+import { describe, expect, it } from "vitest";
+
+import type { MediaStorage } from "@/server/integrations/media-storage/interface";
+import type {
+  UploadResult,
+  UploadSignature,
+} from "@/server/integrations/media-storage/types";
+
+export interface MediaStorageContractHarness {
+  readonly storage: MediaStorage;
+  readonly deliveryPublicId?: string;
+  arrangeValidUpload(signature: UploadSignature): UploadResult;
+}
+
+export function runMediaStorageContract(
+  name: string,
+  createHarness: () => MediaStorageContractHarness,
+): void {
+  describe(`${name} MediaStorage contract`, () => {
+    it("creates a neutral direct-upload signature", async () => {
+      const { storage } = createHarness();
+      const signature = await storage.createUploadSignature({
+        folder: "vehicle-images",
+        ownerType: "vehicle",
+        ownerId: "vehicle-123",
+      });
+
+      expect(signature.uploadUrl).toMatch(/^https:\/\//);
+      expect(signature.publicId).toContain("vehicle-123");
+      expect(signature.expiresAt).toBeGreaterThan(signature.timestamp);
+      expect(signature.signature).not.toHaveLength(0);
+      expect(signature.signedParameters).toMatchObject({
+        publicId: signature.publicId,
+        timestamp: signature.timestamp,
+      });
+    });
+
+    it.each(["folder", "ownerType", "ownerId"] as const)(
+      "rejects a blank %s",
+      async (field) => {
+        const { storage } = createHarness();
+        const input = {
+          folder: "vehicle-images",
+          ownerType: "vehicle",
+          ownerId: "vehicle-123",
+          [field]: "   ",
+        };
+
+        await expect(storage.createUploadSignature(input)).rejects.toThrow(
+          TypeError,
+        );
+      },
+    );
+
+    it("verifies and normalizes an arranged image result", async () => {
+      const harness = createHarness();
+      const signature = await harness.storage.createUploadSignature({
+        folder: "vehicle-images",
+        ownerType: "vehicle",
+        ownerId: "vehicle-123",
+      });
+      const result = harness.arrangeValidUpload(signature);
+
+      await expect(harness.storage.verifyUploadResult(result)).resolves.toEqual(
+        {
+          publicId: signature.publicId,
+          url: result.secureUrl,
+          width: result.width,
+          height: result.height,
+          bytes: result.bytes,
+          format: "jpg",
+        },
+      );
+    });
+
+    it("rejects non-image upload results", async () => {
+      const harness = createHarness();
+      const signature = await harness.storage.createUploadSignature({
+        folder: "vehicle-images",
+        ownerType: "vehicle",
+        ownerId: "vehicle-123",
+      });
+      const result = harness.arrangeValidUpload(signature);
+
+      await expect(
+        harness.storage.verifyUploadResult({
+          ...result,
+          resourceType: "video",
+        }),
+      ).rejects.toThrow(TypeError);
+    });
+
+    it("deletes a verified asset idempotently", async () => {
+      const harness = createHarness();
+      const signature = await harness.storage.createUploadSignature({
+        folder: "vehicle-images",
+        ownerType: "vehicle",
+        ownerId: "vehicle-123",
+      });
+      await harness.storage.verifyUploadResult(
+        harness.arrangeValidUpload(signature),
+      );
+
+      await expect(
+        harness.storage.deleteAsset(signature.publicId),
+      ).resolves.toEqual({ status: "deleted" });
+      await expect(
+        harness.storage.deleteAsset(signature.publicId),
+      ).resolves.toEqual({ status: "alreadyMissing" });
+    });
+
+    it("builds a deterministic delivery URL from application transforms", () => {
+      const { storage, deliveryPublicId = "vehicles/example" } =
+        createHarness();
+      const transform = {
+        width: 800,
+        height: 600,
+        fit: "cover" as const,
+        quality: 80,
+        format: "WEBP",
+        devicePixelRatio: 2,
+      };
+
+      expect(storage.buildDeliveryUrl(deliveryPublicId, transform)).toBe(
+        storage.buildDeliveryUrl(deliveryPublicId, transform),
+      );
+      expect(storage.buildDeliveryUrl(deliveryPublicId, transform)).toMatch(
+        /^https:\/\//,
+      );
+    });
+  });
+}

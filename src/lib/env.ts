@@ -9,6 +9,6 @@ import { parseEnv } from "@/lib/env.schema";
  * server-only: importing it from a Client Component is a build error, which
  * keeps secrets out of the browser bundle.
  */
-export const env = parseEnv(process.env);
+export const env = parseEnv({ ...process.env });
 
 export type { Environment } from "@/lib/env.schema";

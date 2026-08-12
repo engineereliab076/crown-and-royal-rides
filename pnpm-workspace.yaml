@@ -7,6 +7,10 @@
 # sharp and unrs-resolver are transitive native builds pnpm recognises as safe.
 allowBuilds:
   "@prisma/engines": true
+  # Phase 2 password hashing: argon2 is a native addon whose install script
+  # builds/selects the platform binary. Approved so hashPassword/verifyPassword
+  # can load the compiled module at runtime. Only argon2 is approved here.
+  argon2: true
   # Phase 1 does not upload source maps, so the optional Sentry CLI binary is
   # explicitly denied instead of approving its download/install script.
   "@sentry/cli": false

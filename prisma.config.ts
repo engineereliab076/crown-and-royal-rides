@@ -35,7 +35,11 @@ export default defineConfig({
   schema: path.join("prisma", "schema.prisma"),
   migrations: {
     path: path.join("prisma", "migrations"),
-    seed: "tsx prisma/seed.ts",
+    // The seed reuses the production Argon2id helper, which is `server-only`.
+    // `--conditions=react-server` resolves `server-only` to its empty variant so
+    // the guarded module loads in this legitimately server-side Node context;
+    // it never lowers the browser-bundle protection for the app itself.
+    seed: "tsx --conditions=react-server prisma/seed.ts",
   },
   ...(Object.keys(datasource).length > 0 ? { datasource } : {}),
 });

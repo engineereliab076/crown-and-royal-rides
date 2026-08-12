@@ -82,7 +82,7 @@ Do not document real production credentials anywhere in this repository.
 | Database integration tests | `pnpm test:integration`  |
 | All Vitest tests           | `pnpm test`              |
 | Verify migration drift     | `pnpm db:migrate:verify` |
-| Run guarded seed skeleton  | `pnpm db:seed`           |
+| Seed the first owner       | `pnpm db:seed`           |
 | Production build           | `pnpm build`             |
 | Production start           | `pnpm start`             |
 | End-to-end (dev server)    | `pnpm test:e2e`          |
@@ -178,21 +178,173 @@ Real-adapter tests inject narrow fake SDK facades. They never send email, upload
 or delete media, write Redis, or emit Sentry events. Live-provider smoke tests
 are not part of the ordinary unit suite.
 
-### Guarded seed skeleton
+### First-owner seed
 
 Prisma 7 invokes `prisma/seed.ts` explicitly through `pnpm db:seed`; it is not
 run automatically by migration commands. Treat seeding as a one-off
-administrative operation: the skeleton deliberately uses `DIRECT_DATABASE_URL`,
-not the pooled runtime URL, and refuses `VERCEL_ENV=production` before client
-construction. A complete `SEED_OWNER_EMAIL` / `SEED_OWNER_PASSWORD` pair is also
-required, and the password is never printed or stored in plaintext.
+administrative operation. It has a dedicated parser that reads only
+`DATABASE_URL`, `SEED_OWNER_EMAIL`, `SEED_OWNER_PASSWORD`, `SEED_TARGET`, and
+`ALLOW_PRODUCTION_FIRST_OWNER_SEED`; application/provider configuration cannot
+change seed eligibility. A complete email/password pair is required (email a
+valid address; password at least 12 characters), and the password is never
+printed, logged, or stored — only its Argon2id hash is persisted.
 
-The Phase 1 skeleton currently exits non-zero without issuing a database query
-or mutation because the Phase 2 Argon2id password-hashing service does not yet
-exist. This prevents an owner account from being created with a placeholder or
-plaintext password. Once Phase 2 supplies that service, owner creation can be
-implemented at the marked guard while retaining the production gate, validated
-configuration, direct-connection policy, and `finally` disconnect.
+**Argon2 native dependency.** Password hashing uses the `argon2` package, a
+native Node addon. Its install/build script is approved for exactly that package
+in `pnpm-workspace.yaml` (`allowBuilds: argon2: true`), so `pnpm install` compiles
+or selects the platform binary. If the module fails to load, re-run
+`pnpm install` so the build step runs. The seed reuses the same production
+Argon2id helper via `tsx --conditions=react-server` (the helper is `server-only`;
+that condition lets it load in this legitimately server-side Node context and
+does not weaken the browser-bundle protection for the app).
+
+**Local/test procedure.** Supply values for the command only. Local/test targets
+must not use a managed Neon hostname and need no Production acknowledgement:
+
+```bash
+DATABASE_URL="<local-or-test PostgreSQL URL>" \
+SEED_OWNER_EMAIL="<initial owner email>" \
+SEED_OWNER_PASSWORD="<strong private password of at least 12 characters>" \
+pnpm db:seed
+```
+
+**Behavior.** The seed validates and normalizes the email, hashes the password
+with the production Argon2id parameters, and creates at most one active `owner`
+administrator with `mustChangePassword = true`. Inside a serializable
+transaction it checks for any existing owner before hashing: an existing owner
+is a successful unchanged stop, while a requested email already assigned to a
+non-owner is a safe conflict. It never overwrites password, role, or account
+state. Only `admin_users` is written.
+
+**One-time Neon Production bootstrap.** Production requires all of these exact
+conditions: `SEED_TARGET=production`,
+`ALLOW_PRODUCTION_FIRST_OWNER_SEED=CREATE_EXACTLY_ONE_PRODUCTION_OWNER`, and a
+PostgreSQL `DATABASE_URL` whose role is exactly `crr_application`, whose Neon
+hostname contains `-pooler`, and whose `sslmode` requires SSL. Use the existing
+least-privilege pooled application connection. Never use `DIRECT_DATABASE_URL`
+or the `neondb_owner` migration role for seeding.
+
+```bash
+SEED_TARGET=production \
+ALLOW_PRODUCTION_FIRST_OWNER_SEED=CREATE_EXACTLY_ONE_PRODUCTION_OWNER \
+DATABASE_URL="<pooled Production Neon URL for crr_application with SSL required>" \
+SEED_OWNER_EMAIL="<initial owner email>" \
+SEED_OWNER_PASSWORD="<strong private password of at least 12 characters>" \
+pnpm db:seed
+```
+
+**Never commit or share the plaintext seed password.** Provide it only for the
+single seed command (shell/session scope), rotate it if it is ever exposed, and
+keep it out of the repository, `.env`/`.env.local`, logs, and chat history.
+
+## Admin authentication (Auth.js)
+
+Admin authentication uses Auth.js v5 (`next-auth`) with a Credentials provider
+and **JWT sessions**. The Auth.js route is mounted at `/api/admin/auth/*`.
+
+**Local login setup.**
+
+1. Seed a first owner (see "First-owner seed").
+2. Set `AUTH_SECRET` in `.env.local` — Auth.js requires it to sign/verify the
+   session JWT. Generate a fresh value (≥ 32 chars), e.g.
+   `openssl rand -base64 33`, and never reuse `IP_HASH_SECRET`/`CRON_SECRET`.
+   `AUTH_URL` is optional locally (`trustHost` is enabled); set it in
+   deployments. These keys already exist in `.env.example`; no new keys were
+   added for this group.
+3. Start the app and sign in at `/admin/login`.
+
+**Secrets.** `AUTH_SECRET` signs the JWT; a valid token is required for any
+`/admin/*` or `/api/admin/*` route. `IP_HASH_SECRET` is used to HMAC rate-limit
+identifiers (emails/IPs are never stored raw); it is mandatory once the shared
+(Upstash) rate-limit backend is active.
+
+**Rate limiting.** Login is throttled on two axes — five attempts per normalized
+email and twenty per client IP, each per 15-minute fixed window — and password
+changes are throttled per administrator. Keys are namespaced and HMAC-hashed.
+The policy is **fail-closed**: if the rate-limit provider is unavailable, the
+attempt is denied rather than allowed. Login failures (unknown email, wrong
+password, inactive account, malformed hash, invalid input) all return one
+generic message and never reveal whether an account exists.
+
+**Forced password change.** A freshly seeded owner has
+`mustChangePassword = true`. Such an administrator can reach only
+`/admin/change-password` (and logout/auth endpoints); every other protected page
+and API is blocked until the password is changed. Changing the password rotates
+the hash, clears the flag, and increments `sessionVersion` in one atomic update,
+which invalidates the existing session — the user is signed out and must sign in
+again.
+
+**Middleware is deliberately limited.** `src/middleware.ts` only checks that a
+cryptographically valid Auth.js session cookie exists (redirecting anonymous
+page requests to `/admin/login` and returning 401 for anonymous admin APIs). It
+never imports Prisma, the auth repository/service, or Argon2, never touches the
+database, and enforces no role or business rules. The authoritative,
+database-backed checks (existence, active status, session version, current role,
+forced-change) run in Node: the Auth.js session callback performs exactly one
+indexed lookup per session retrieval, and the protected layout, the route-handler
+auth guard (`src/server/http/auth-guard.ts`), and the services enforce access.
+
+### Administrator management and audit logging
+
+Administrator management and audit-log access are owner-only. Newly created
+administrators and password resets use cryptographically generated temporary
+passwords: the plaintext is displayed once in the successful response, only its
+Argon2id hash is stored, and the administrator must change it after signing in.
+
+Role changes, deactivation, and password resets increment `sessionVersion`, so
+sessions issued before those events stop validating. Reactivation preserves the
+already-incremented version and cannot revive an invalidated session. A
+serializable, row-locking transaction prevents deactivating or demoting the last
+active owner, including under concurrent requests.
+
+Successful administrator creation, role change, deactivation, reactivation, and
+password reset each append one audit record atomically with the mutation. Audit
+metadata may contain safe before/after state and a correlation ID, but must never
+contain plaintext or hashed passwords, session tokens, credentials, secrets, or
+database URLs. Audit records are append-only through application code.
+**Service-layer `requireCapability` remains authoritative** — the guard is a
+convenience, not a replacement, so business operations still check capabilities
+themselves.
+
+### Admin shell and protected routes
+
+The protected shell uses the database-validated session once per request and
+provides a desktop sidebar, mobile sheet navigation, breadcrumb-style header,
+signed-in administrator identity, and logout control. Navigation comes from one
+definition and is filtered with the capability matrix: Users requires
+`admin:manage`, Audit Log requires `audit:read`, and Settings requires
+`settings:update`. Hidden links are only presentation; page guards, API guards,
+and service capability checks remain authoritative.
+
+Implemented administration pages and APIs:
+
+| Area      | Page               | API                                              |
+| --------- | ------------------ | ------------------------------------------------ |
+| Users     | `/admin/users`     | `/api/admin/users` and `/api/admin/users/[id]/*` |
+| Audit log | `/admin/audit-log` | `/api/admin/audit-log`                           |
+| Settings  | `/admin/settings`  | `GET` / `PUT /api/admin/settings`                |
+
+Temporary passwords from administrator creation or reset live only in component
+memory, are displayed in a clearly marked one-time dialog, and are cleared when
+the dialog closes or the page unmounts. They must never be placed in browser
+storage, URLs, cookies, logs, analytics, toasts, or audit metadata.
+
+Business settings use only the existing `business_settings` singleton row
+(`id = 1`). Updates require `settings:update`; a successful change and its
+`settings.updated` audit row commit atomically. Audit metadata stores only the
+names of changed fields and the request correlation ID. No-op and failed updates
+write no successful audit record.
+
+Role changes, deactivation, administrator password resets, and self-service
+password changes invalidate earlier sessions through `sessionVersion`.
+Reactivation does not restore an older invalidated version. The Auth.js session
+callback continues to perform one indexed administrator lookup per validation.
+
+For a new database, use the applicable manual first-owner procedure above before
+signing in. Supply seed values only for that command and never persist or share
+the plaintext password. Production must use the exact acknowledgement and the
+existing pooled `crr_application` connection; seeding never uses the migration
+role or `DIRECT_DATABASE_URL`.
 
 ## Database migrations
 
@@ -427,8 +579,9 @@ later change must arrive as a new, additive migration.
 
 ## Environment variables
 
-- `.env.example` is the authoritative documentation of every supported key
-  (26 keys, matching `KNOWN_KEYS` in `src/lib/env.schema.ts`).
+- `.env.example` documents the 26 application keys understood by
+  `src/lib/env.schema.ts` plus the two seed-only non-secret controls
+  (`SEED_TARGET` and `ALLOW_PRODUCTION_FIRST_OWNER_SEED`).
 - Optional provider groups are all-or-none: setting any member of a group makes
   the whole group required.
 - Preview and Production application URLs must use HTTPS.

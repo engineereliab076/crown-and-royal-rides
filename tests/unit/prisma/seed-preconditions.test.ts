@@ -2,180 +2,189 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { parseEnv } from "@/lib/env.schema";
-
 import {
-  assertPhase2PasswordHashingAvailable,
-  assertSeedStartupPreconditions,
+  parseSeedEnvironment,
   safeSeedErrorMessage,
   SeedPreconditionError,
 } from "../../../prisma/seed-preconditions";
 
-const fakeEnvironment = {
-  DATABASE_URL: "postgresql://fake:fake@127.0.0.1:1/crown_royal_rides_test",
-  DIRECT_DATABASE_URL:
-    "postgresql://fake:fake@127.0.0.1:1/crown_royal_rides_test",
-  SEED_OWNER_EMAIL: "owner@example.test",
-  SEED_OWNER_PASSWORD: "SEED_PASSWORD_LEAK_MARKER_never_used",
-};
+const PASSWORD = "SEED_PASSWORD_LEAK_MARKER_never_used";
+const LOCAL_URL =
+  "postgresql://local_app:fake@127.0.0.1:5432/crown_royal_rides_test";
+const PRODUCTION_URL =
+  "postgresql://crr_application:fake@ep-example-pooler.eu-central-1.aws.neon.tech/app?sslmode=require";
+const ACKNOWLEDGEMENT = "CREATE_EXACTLY_ONE_PRODUCTION_OWNER";
 
-function captureSeedPreconditionError(
-  environment: Parameters<typeof assertSeedStartupPreconditions>[0],
-): SeedPreconditionError {
+function base(overrides: Record<string, string | undefined> = {}) {
+  return {
+    DATABASE_URL: LOCAL_URL,
+    SEED_OWNER_EMAIL: "owner@example.test",
+    SEED_OWNER_PASSWORD: PASSWORD,
+    ...overrides,
+  };
+}
+
+function production(overrides: Record<string, string | undefined> = {}) {
+  return base({
+    DATABASE_URL: PRODUCTION_URL,
+    SEED_TARGET: "production",
+    ALLOW_PRODUCTION_FIRST_OWNER_SEED: ACKNOWLEDGEMENT,
+    ...overrides,
+  });
+}
+
+function captureError(input: Record<string, string | undefined>) {
   try {
-    assertSeedStartupPreconditions(environment);
+    parseSeedEnvironment(input);
   } catch (error) {
     if (error instanceof SeedPreconditionError) return error;
     throw error;
   }
-  throw new Error("Expected a seed precondition failure");
+  throw new Error("Expected seed environment parsing to fail");
 }
 
-describe("seed preconditions", () => {
-  it("rejects Production before considering credentials", () => {
-    expect(() =>
-      assertSeedStartupPreconditions({ VERCEL_ENV: "production" }),
-    ).toThrowError(
-      expect.objectContaining({ code: "PRODUCTION_SEED_FORBIDDEN" }),
-    );
-  });
-
-  it("requires the complete seed credential pair", () => {
-    expect(() =>
-      assertSeedStartupPreconditions({
-        DIRECT_DATABASE_URL: fakeEnvironment.DIRECT_DATABASE_URL,
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "SEED_CREDENTIALS_REQUIRED" }),
-    );
-    expect(() =>
-      assertSeedStartupPreconditions({
-        ...fakeEnvironment,
-        SEED_OWNER_PASSWORD: undefined,
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "SEED_CREDENTIALS_REQUIRED" }),
-    );
-  });
-
-  it("requires the direct database URL", () => {
-    expect(() =>
-      assertSeedStartupPreconditions({
-        SEED_OWNER_EMAIL: fakeEnvironment.SEED_OWNER_EMAIL,
-        SEED_OWNER_PASSWORD: fakeEnvironment.SEED_OWNER_PASSWORD,
-      }),
-    ).toThrowError(
-      expect.objectContaining({ code: "DIRECT_DATABASE_URL_REQUIRED" }),
-    );
-  });
-
-  it("returns credentials without logging or transforming them", () => {
-    expect(assertSeedStartupPreconditions(fakeEnvironment)).toEqual({
-      directDatabaseUrl: fakeEnvironment.DIRECT_DATABASE_URL,
-      ownerEmail: fakeEnvironment.SEED_OWNER_EMAIL,
-      ownerPassword: fakeEnvironment.SEED_OWNER_PASSWORD,
+describe("dedicated seed environment parser", () => {
+  it("accepts safe local and test targets without a Production acknowledgement", () => {
+    expect(parseSeedEnvironment(base())).toMatchObject({ target: "local" });
+    expect(parseSeedEnvironment(base({ SEED_TARGET: "test" }))).toMatchObject({
+      target: "test",
     });
   });
 
-  it("always refuses owner creation until Phase 2 hashing exists", () => {
-    expect(assertPhase2PasswordHashingAvailable).toThrowError(
-      expect.objectContaining({ code: "PASSWORD_HASHING_UNAVAILABLE" }),
+  it("requires both exact Production acknowledgement values", () => {
+    expect(
+      captureError(production({ ALLOW_PRODUCTION_FIRST_OWNER_SEED: undefined }))
+        .code,
+    ).toBe("PRODUCTION_ACKNOWLEDGEMENT_REQUIRED");
+    expect(
+      captureError(
+        production({
+          ALLOW_PRODUCTION_FIRST_OWNER_SEED:
+            "CREATE_EXACTLY_ONE_PRODUCTION_OWNER ",
+        }),
+      ).code,
+    ).toBe("PRODUCTION_ACKNOWLEDGEMENT_REQUIRED");
+    expect(
+      captureError(
+        base({
+          DATABASE_URL: PRODUCTION_URL,
+          SEED_TARGET: "Production",
+          ALLOW_PRODUCTION_FIRST_OWNER_SEED: ACKNOWLEDGEMENT,
+        }),
+      ).code,
+    ).toBe("SEED_TARGET_INVALID");
+    expect(parseSeedEnvironment(production())).toMatchObject({
+      target: "production",
+      databaseUrl: PRODUCTION_URL,
+    });
+  });
+
+  it("rejects an owner or migration-role URL in Production", () => {
+    const error = captureError(
+      production({
+        DATABASE_URL:
+          "postgresql://neondb_owner:fake@ep-example-pooler.eu-central-1.aws.neon.tech/app?sslmode=require",
+      }),
+    );
+    expect(error.code).toBe("PRODUCTION_APPLICATION_ROLE_REQUIRED");
+    expect(error.message).not.toContain("neondb_owner:fake");
+  });
+
+  it("rejects a non-pooler Production URL", () => {
+    expect(
+      captureError(
+        production({
+          DATABASE_URL:
+            "postgresql://crr_application:fake@ep-example.eu-central-1.aws.neon.tech/app?sslmode=require",
+        }),
+      ).code,
+    ).toBe("PRODUCTION_POOLED_NEON_URL_REQUIRED");
+  });
+
+  it("requires SSL for Production", () => {
+    expect(
+      captureError(
+        production({
+          DATABASE_URL:
+            "postgresql://crr_application:fake@ep-example-pooler.eu-central-1.aws.neon.tech/app",
+        }),
+      ).code,
+    ).toBe("PRODUCTION_SSL_REQUIRED");
+  });
+
+  it("rejects a managed Neon URL in local or test mode", () => {
+    expect(
+      captureError(
+        base({ DATABASE_URL: PRODUCTION_URL, SEED_TARGET: undefined }),
+      ).code,
+    ).toBe("MANAGED_NEON_TARGET_FORBIDDEN");
+    expect(
+      captureError(base({ DATABASE_URL: PRODUCTION_URL, SEED_TARGET: "test" }))
+        .code,
+    ).toBe("MANAGED_NEON_TARGET_FORBIDDEN");
+  });
+
+  it("validates only the seed's five variables", () => {
+    expect(
+      parseSeedEnvironment({
+        ...base(),
+        VERCEL_ENV: "production",
+        DIRECT_DATABASE_URL: "not-a-url",
+        AUTH_SECRET: "short",
+        CLOUDINARY_API_SECRET: "unrelated",
+      }),
+    ).toEqual({
+      databaseUrl: LOCAL_URL,
+      ownerEmail: "owner@example.test",
+      ownerPassword: PASSWORD,
+      target: "local",
+    });
+  });
+
+  it("requires valid database and seed credential inputs", () => {
+    expect(captureError(base({ DATABASE_URL: undefined })).code).toBe(
+      "DATABASE_URL_REQUIRED",
+    );
+    expect(
+      captureError(base({ DATABASE_URL: "https://example.test" })).code,
+    ).toBe("DATABASE_URL_INVALID");
+    expect(captureError(base({ SEED_OWNER_PASSWORD: undefined })).code).toBe(
+      "SEED_CREDENTIALS_REQUIRED",
+    );
+    expect(captureError(base({ SEED_OWNER_PASSWORD: "too-short" })).code).toBe(
+      "SEED_PASSWORD_INVALID",
     );
   });
 
-  it("never exposes an unknown failure or credential marker", () => {
-    const marker = "SEED_PASSWORD_LEAK_MARKER";
+  it("never exposes unknown errors, passwords, or connection credentials", () => {
+    const marker = "SECRET_CONNECTION_OR_PASSWORD_MARKER";
     expect(safeSeedErrorMessage(new Error(marker))).toBe(
-      "The seed skeleton failed safely without writing data.",
+      "The seed failed safely without writing data.",
     );
     expect(safeSeedErrorMessage(new Error(marker))).not.toContain(marker);
-  });
 
-  it("uses a stable provider-neutral error name", () => {
-    const error = new SeedPreconditionError(
-      "PASSWORD_HASHING_UNAVAILABLE",
-      "Safe message",
+    const error = captureError(
+      production({ DATABASE_URL: "postgresql://wrong:secret@example.test/db" }),
     );
-    expect(error.name).toBe("SeedPreconditionError");
-  });
-
-  it("parses a plain environment snapshot before validating seed inputs", () => {
-    const environment = parseEnv({ ...fakeEnvironment });
-
-    expect(assertSeedStartupPreconditions(environment)).toEqual({
-      directDatabaseUrl: fakeEnvironment.DIRECT_DATABASE_URL,
-      ownerEmail: fakeEnvironment.SEED_OWNER_EMAIL,
-      ownerPassword: fakeEnvironment.SEED_OWNER_PASSWORD,
-    });
-  });
-
-  it("reports missing credentials without mentioning the hashing guard", () => {
-    const error = captureSeedPreconditionError(parseEnv({}));
     const message = safeSeedErrorMessage(error);
-
-    expect(error.code).toBe("SEED_CREDENTIALS_REQUIRED");
-    expect(message).toBe(
-      "SEED_OWNER_EMAIL and SEED_OWNER_PASSWORD are required for seeding.",
-    );
-    expect(message).not.toContain("Argon2id");
-    expect(message).not.toContain("PASSWORD_HASHING_UNAVAILABLE");
+    expect(message).not.toContain("secret");
+    expect(message).not.toContain("postgresql://");
   });
 
-  it("reaches the hashing guard with complete fake local configuration safely", () => {
-    const environment = parseEnv({ ...fakeEnvironment });
-    const configuration = assertSeedStartupPreconditions(environment);
-    let error: unknown;
-
-    try {
-      assertPhase2PasswordHashingAvailable();
-    } catch (caught) {
-      error = caught;
-    }
-
-    expect(configuration.ownerEmail).toBe(fakeEnvironment.SEED_OWNER_EMAIL);
-    expect(error).toEqual(
-      expect.objectContaining({ code: "PASSWORD_HASHING_UNAVAILABLE" }),
-    );
-    expect(safeSeedErrorMessage(error)).toContain(
-      "disabled until the Phase 2 Argon2id password-hashing service is available",
-    );
-    expect(safeSeedErrorMessage(error)).not.toContain(
-      fakeEnvironment.SEED_OWNER_PASSWORD,
-    );
-  });
-
-  it("rejects a production-shaped snapshot before credentials or hashing", () => {
-    const environment = parseEnv({
-      VERCEL_ENV: "production",
-      NEXT_PUBLIC_APP_URL: "https://production.example.test",
-      APP_ORIGIN: "https://production.example.test",
-    });
-    const error = captureSeedPreconditionError(environment);
-    const message = safeSeedErrorMessage(error);
-
-    expect(error.code).toBe("PRODUCTION_SEED_FORBIDDEN");
-    expect(message).toBe("The seed skeleton must never run in Production.");
-    expect(message).not.toContain("SEED_OWNER");
-    expect(message).not.toContain("Argon2id");
-  });
-
-  it("keeps snapshot parsing and all guards ahead of Prisma construction", () => {
+  it("parses before constructing Prisma and does not import the application parser", () => {
     const source = readFileSync(
       new URL("../../../prisma/seed.ts", import.meta.url),
       "utf8",
     );
     const main = source.slice(source.indexOf("async function main"));
-    const parseIndex = main.indexOf("parseEnv({ ...process.env })");
-    const preconditionsIndex = main.indexOf("assertSeedStartupPreconditions(");
-    const hashingIndex = main.indexOf("assertPhase2PasswordHashingAvailable()");
-    const adapterIndex = main.indexOf("new PrismaPg(");
-    const clientIndex = main.indexOf("new PrismaClient(");
 
-    expect(parseIndex).toBeGreaterThan(-1);
-    expect(preconditionsIndex).toBeGreaterThan(parseIndex);
-    expect(hashingIndex).toBeGreaterThan(preconditionsIndex);
-    expect(adapterIndex).toBeGreaterThan(hashingIndex);
-    expect(clientIndex).toBeGreaterThan(adapterIndex);
+    expect(source).not.toContain("src/lib/env");
+    expect(main.indexOf("parseSeedEnvironment(process.env)")).toBeGreaterThan(
+      -1,
+    );
+    expect(main.indexOf("new PrismaPg(")).toBeGreaterThan(
+      main.indexOf("parseSeedEnvironment(process.env)"),
+    );
     expect(main).not.toMatch(
       /\.(?:\$queryRaw|\$executeRaw|create|update|delete)\s*\(/u,
     );

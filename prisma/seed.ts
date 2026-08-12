@@ -1,29 +1,27 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 
 import { PrismaClient } from "../src/generated/prisma/client";
-import { parseEnv } from "../src/lib/env.schema";
+import { createFirstOwner, seedOutcomeMessage } from "./first-owner";
 import {
-  assertPhase2PasswordHashingAvailable,
-  assertSeedStartupPreconditions,
+  parseSeedEnvironment,
   safeSeedErrorMessage,
 } from "./seed-preconditions";
 
 async function main(): Promise<void> {
-  const environment = parseEnv({ ...process.env });
-  const configuration = assertSeedStartupPreconditions(environment);
-
-  // Phase 2 will provide Argon2id hashing and owner creation. Until then this
-  // guard deliberately runs before constructing Prisma or touching a database.
-  assertPhase2PasswordHashingAvailable();
+  const configuration = parseSeedEnvironment(process.env);
 
   // Seeding is an explicit, one-off administrative operation, so it uses the
-  // direct database URL rather than the pooled application runtime URL.
+  // least-privilege application URL. Production validation requires the
+  // crr_application role through Neon's pooled endpoint. The connection string
+  // is handed to the adapter and never printed or logged.
   const adapter = new PrismaPg({
-    connectionString: configuration.directDatabaseUrl,
+    connectionString: configuration.databaseUrl,
   });
   const prisma = new PrismaClient({ adapter });
 
   try {
+    const result = await createFirstOwner(prisma, configuration);
+    process.stdout.write(`${seedOutcomeMessage(result)}\n`);
   } finally {
     await prisma.$disconnect();
   }

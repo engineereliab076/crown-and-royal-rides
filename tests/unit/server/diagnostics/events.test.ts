@@ -110,6 +110,15 @@ describe("code/stage/severity guards and safe status", () => {
     expect(isDiagnosticSeverity("fatal")).toBe(false);
   });
 
+  it("recognizes the auth.verify substages and their codes", () => {
+    expect(isDiagnosticStage("auth.verify.repository")).toBe(true);
+    expect(isDiagnosticStage("auth.verify.password")).toBe(true);
+    expect(isDiagnosticStage("auth.verify.record")).toBe(true);
+    expect(isDiagnosticCode("AUTH_DATABASE_QUERY_FAILED")).toBe(true);
+    expect(isDiagnosticCode("AUTH_PASSWORD_VERIFIER_FAILED")).toBe(true);
+    expect(isDiagnosticCode("AUTH_CREDENTIAL_RECORD_INVALID")).toBe(true);
+  });
+
   it("derives coarse safe statuses only from stable codes", () => {
     expect(safeStatusForCode("RATE_LIMIT_PROVIDER_UNAUTHORIZED")).toBe(401);
     expect(safeStatusForCode("RATE_LIMIT_PROVIDER_FORBIDDEN")).toBe(403);

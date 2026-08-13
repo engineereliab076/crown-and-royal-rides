@@ -9,9 +9,10 @@ import type {
 import { isAppError } from "@/server/http/errors";
 import { rateLimitCodeFrom } from "@/server/integrations/rate-limiter/classify";
 import type { AuthRateLimiter } from "@/server/modules/auth/rate-limit";
-import type {
-  AuthenticatedAdmin,
-  AuthService,
+import {
+  CredentialVerificationError,
+  type AuthenticatedAdmin,
+  type AuthService,
 } from "@/server/modules/auth/service";
 
 /**
@@ -89,6 +90,42 @@ function providerUnavailable(
   return { stage, code, severity: "error" };
 }
 
+/**
+ * Classify an unexpected (non-credential) verification failure into its exact
+ * substage. A {@link CredentialVerificationError} names the failing operation;
+ * anything else remains the generic unexpected-internal classification. No cause
+ * detail is ever read — only the fixed phase label.
+ */
+function verifyFailureDiagnostic(error: unknown): LoginDiagnostic {
+  if (error instanceof CredentialVerificationError) {
+    switch (error.phase) {
+      case "repository":
+        return {
+          stage: "auth.verify.repository",
+          code: "AUTH_DATABASE_QUERY_FAILED",
+          severity: "error",
+        };
+      case "password":
+        return {
+          stage: "auth.verify.password",
+          code: "AUTH_PASSWORD_VERIFIER_FAILED",
+          severity: "error",
+        };
+      case "record":
+        return {
+          stage: "auth.verify.record",
+          code: "AUTH_CREDENTIAL_RECORD_INVALID",
+          severity: "error",
+        };
+    }
+  }
+  return {
+    stage: "auth.verify",
+    code: "AUTH_UNEXPECTED_INTERNAL",
+    severity: "error",
+  };
+}
+
 export async function performLogin(
   input: LoginInput,
   deps: LoginDependencies,
@@ -127,11 +164,9 @@ export async function performLogin(
     });
   } catch (error) {
     if (!isAppError(error) || error.code !== "AUTH_INVALID_CREDENTIALS") {
-      await reportSafely(deps.reportFailure, {
-        stage: "auth.verify",
-        code: "AUTH_UNEXPECTED_INTERNAL",
-        severity: "error",
-      });
+      // A single event names the exact failing substage (repository / password
+      // / record), or falls back to the generic unexpected-internal code.
+      await reportSafely(deps.reportFailure, verifyFailureDiagnostic(error));
       throw error;
     }
 

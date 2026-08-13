@@ -6,7 +6,10 @@ import {
   hashPassword as defaultHashPassword,
   verifyPassword as defaultVerifyPassword,
 } from "@/server/modules/auth/password";
-import type { AuthRepository } from "@/server/modules/auth/repository";
+import type {
+  AuthRepository,
+  CredentialAdmin,
+} from "@/server/modules/auth/repository";
 import {
   normalizeEmail,
   passwordChangeSchema,
@@ -103,6 +106,48 @@ function invalidCredentialsError(): AppError {
   });
 }
 
+/**
+ * The internal sub-operation of {@link AuthService.verifyCredentials} that failed
+ * *unexpectedly* — distinct from a genuine credential rejection, which always
+ * surfaces as the generic `AUTH_INVALID_CREDENTIALS` {@link AppError}. Callers
+ * map this to a safe diagnostic substage; the phase name is a fixed, non-sensitive
+ * label and the underlying cause is never logged.
+ */
+export type CredentialVerificationPhase = "repository" | "password" | "record";
+
+/** An unexpected failure of a specific verification sub-operation. */
+export class CredentialVerificationError extends Error {
+  readonly phase: CredentialVerificationPhase;
+
+  constructor(
+    phase: CredentialVerificationPhase,
+    options?: { cause?: unknown },
+  ) {
+    super(`Credential verification failed during the ${phase} phase.`, options);
+    this.name = "CredentialVerificationError";
+    this.phase = phase;
+  }
+}
+
+/**
+ * Structural validation of a matched, active credential record (never its
+ * `passwordHash` content — a malformed hash is handled by the verifier and stays
+ * a generic rejection). A record failing these checks indicates internal data
+ * corruption rather than a wrong credential.
+ */
+function isValidCredentialRecord(admin: CredentialAdmin): boolean {
+  return (
+    typeof admin.id === "string" &&
+    admin.id.length > 0 &&
+    typeof admin.email === "string" &&
+    typeof admin.name === "string" &&
+    typeof admin.role === "string" &&
+    typeof admin.isActive === "boolean" &&
+    typeof admin.mustChangePassword === "boolean" &&
+    Number.isInteger(admin.sessionVersion)
+  );
+}
+
 export function createAuthService(deps: AuthServiceDependencies): AuthService {
   const { repository } = deps;
   const verifyPassword = deps.verifyPassword ?? defaultVerifyPassword;
@@ -113,18 +158,41 @@ export function createAuthService(deps: AuthServiceDependencies): AuthService {
       input: VerifyCredentialsInput,
     ): Promise<AuthenticatedAdmin> {
       const email = normalizeEmail(input.email);
-      const admin = await repository.findCredentialByEmail(email);
 
-      // Verify unconditionally to keep timing uniform. For an unknown or
-      // inactive account the decoy hash is used and the result is discarded.
+      // 1) Repository lookup. A missing administrator is a neutral null; only a
+      //    thrown database error is an unexpected repository-substage failure.
+      let admin: CredentialAdmin | null;
+      try {
+        admin = await repository.findCredentialByEmail(email);
+      } catch (error) {
+        throw new CredentialVerificationError("repository", { cause: error });
+      }
+
+      // 2) Verify unconditionally to keep timing uniform. For an unknown or
+      //    inactive account the decoy hash is used and the result is discarded.
+      //    The default verifier never throws (a malformed hash resolves to
+      //    false and stays a generic rejection); only an injected/native fault
+      //    is an unexpected password-substage failure.
       const hashToCheck =
         admin !== null && admin.isActive
           ? admin.passwordHash
           : DECOY_PASSWORD_HASH;
-      const passwordMatches = await verifyPassword(hashToCheck, input.password);
+      let passwordMatches: boolean;
+      try {
+        passwordMatches = await verifyPassword(hashToCheck, input.password);
+      } catch (error) {
+        throw new CredentialVerificationError("password", { cause: error });
+      }
 
       if (admin === null || !admin.isActive || !passwordMatches) {
         throw invalidCredentialsError();
+      }
+
+      // 3) A matched, active record must be structurally sound before it becomes
+      //    an authenticated principal; corruption is an internal record failure,
+      //    not a credential rejection.
+      if (!isValidCredentialRecord(admin)) {
+        throw new CredentialVerificationError("record");
       }
 
       return {

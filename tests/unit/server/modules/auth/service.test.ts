@@ -3,8 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { AdminRole } from "@/generated/prisma/enums";
 import { AppError, isAppError } from "@/server/http/errors";
 import { hashPassword, verifyPassword } from "@/server/modules/auth/password";
-import type { CredentialAdmin } from "@/server/modules/auth/repository";
-import { createAuthService } from "@/server/modules/auth/service";
+import type {
+  AuthRepository,
+  CredentialAdmin,
+} from "@/server/modules/auth/repository";
+import {
+  createAuthService,
+  CredentialVerificationError,
+} from "@/server/modules/auth/service";
 
 import { FakeAuthRepository } from "./support/fake-auth-repository";
 
@@ -221,6 +227,113 @@ describe("createAuthService.verifyCredentials", () => {
     expect(verifyPassword).toHaveBeenCalledTimes(1);
     const [hashArg] = verifyPassword.mock.calls[0] ?? [];
     expect(hashArg?.startsWith("$argon2id$")).toBe(true);
+  });
+});
+
+describe("createAuthService.verifyCredentials — unexpected substage failures", () => {
+  function repositoryThatThrows(cause: unknown): AuthRepository {
+    return {
+      findCredentialByEmail: async () => {
+        throw cause;
+      },
+      findCredentialById: async () => null,
+      findSessionById: async () => null,
+      changePassword: async () => ({ sessionVersion: 1 }),
+      recordLogin: async () => {},
+    };
+  }
+
+  function repositoryReturning(admin: CredentialAdmin): AuthRepository {
+    return {
+      findCredentialByEmail: async () => admin,
+      findCredentialById: async () => null,
+      findSessionById: async () => null,
+      changePassword: async () => ({ sessionVersion: 1 }),
+      recordLogin: async () => {},
+    };
+  }
+
+  it("classifies a database query failure as the repository phase", async () => {
+    const dbError = new Error("connection terminated unexpectedly");
+    const service = createAuthService({
+      repository: repositoryThatThrows(dbError),
+    });
+
+    const error = await capture(
+      service.verifyCredentials({
+        email: "owner@example.com",
+        password: PASSWORD,
+      }),
+    );
+
+    expect(error).toBeInstanceOf(CredentialVerificationError);
+    expect((error as CredentialVerificationError).phase).toBe("repository");
+    // The raw database error is preserved as a cause but never in the message.
+    expect((error as CredentialVerificationError).message).not.toContain(
+      "connection terminated",
+    );
+    expect(isAppError(error)).toBe(false);
+  });
+
+  it("classifies a verifier fault as the password phase", async () => {
+    const service = createAuthService({
+      repository: new FakeAuthRepository([await ownerRecord()]),
+      verifyPassword: async () => {
+        throw new Error("argon2 native binding unavailable");
+      },
+    });
+
+    const error = await capture(
+      service.verifyCredentials({
+        email: "owner@example.com",
+        password: PASSWORD,
+      }),
+    );
+
+    expect(error).toBeInstanceOf(CredentialVerificationError);
+    expect((error as CredentialVerificationError).phase).toBe("password");
+  });
+
+  it("classifies a structurally invalid matched record as the record phase", async () => {
+    const corrupt = {
+      ...(await ownerRecord()),
+      sessionVersion: Number.NaN,
+    } as unknown as CredentialAdmin;
+    const service = createAuthService({
+      repository: repositoryReturning(corrupt),
+      // A matching password, so the failure is the record shape, not the secret.
+      verifyPassword: async () => true,
+    });
+
+    const error = await capture(
+      service.verifyCredentials({
+        email: "owner@example.com",
+        password: PASSWORD,
+      }),
+    );
+
+    expect(error).toBeInstanceOf(CredentialVerificationError);
+    expect((error as CredentialVerificationError).phase).toBe("record");
+  });
+
+  it("keeps a malformed stored hash a generic rejection, not a substage failure", async () => {
+    // Regression: the verifier resolves false for a malformed hash (never
+    // throws), so this must stay AUTH_INVALID_CREDENTIALS — not password phase.
+    const service = createAuthService({
+      repository: new FakeAuthRepository([
+        await ownerRecord({ passwordHash: "not-a-valid-argon2-hash" }),
+      ]),
+    });
+
+    const error = await capture(
+      service.verifyCredentials({
+        email: "owner@example.com",
+        password: PASSWORD,
+      }),
+    );
+
+    expect(error).not.toBeInstanceOf(CredentialVerificationError);
+    expectInvalidCredentials(error);
   });
 });
 

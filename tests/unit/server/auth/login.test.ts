@@ -9,7 +9,10 @@ import type { RateLimitDecision } from "@/server/modules/auth/rate-limit";
 import { createAuthRateLimiter } from "@/server/modules/auth/rate-limit";
 import type { CredentialAdmin } from "@/server/modules/auth/repository";
 import type { AuthenticatedAdmin } from "@/server/modules/auth/service";
-import { createAuthService } from "@/server/modules/auth/service";
+import {
+  createAuthService,
+  CredentialVerificationError,
+} from "@/server/modules/auth/service";
 
 import { FakeAuthRepository } from "../modules/auth/support/fake-auth-repository";
 
@@ -561,4 +564,47 @@ describe("performLogin — safe failure classification", () => {
       performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
     ).rejects.toBe(boom);
   });
+
+  it.each([
+    {
+      phase: "repository" as const,
+      stage: "auth.verify.repository",
+      code: "AUTH_DATABASE_QUERY_FAILED",
+    },
+    {
+      phase: "password" as const,
+      stage: "auth.verify.password",
+      code: "AUTH_PASSWORD_VERIFIER_FAILED",
+    },
+    {
+      phase: "record" as const,
+      stage: "auth.verify.record",
+      code: "AUTH_CREDENTIAL_RECORD_INVALID",
+    },
+  ])(
+    "maps a $phase verification fault to a single $code diagnostic",
+    async ({ phase, stage, code }) => {
+      const fault = new CredentialVerificationError(phase);
+      const reportFailure = vi.fn();
+      const deps = stubDeps({
+        verifyCredentials: async () => {
+          throw fault;
+        },
+        recordLoginFailure: vi.fn(),
+        reportFailure,
+      });
+
+      await expect(
+        performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
+      ).rejects.toBe(fault);
+      expect(reportFailure).toHaveBeenCalledWith({
+        stage,
+        code,
+        severity: "error",
+      });
+      // One event per failure, and the email allowance is never spent.
+      expect(reportFailure).toHaveBeenCalledTimes(1);
+      expect(deps.authRateLimiter.recordLoginFailure).not.toHaveBeenCalled();
+    },
+  );
 });

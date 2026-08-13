@@ -23,6 +23,9 @@ export type DiagnosticStage =
   | "auth.rate_limit.ip"
   | "auth.rate_limit.email"
   | "auth.verify"
+  | "auth.verify.repository"
+  | "auth.verify.password"
+  | "auth.verify.record"
   | "auth.bookkeeping"
   | "ratelimit.probe";
 
@@ -43,6 +46,9 @@ export type AuthDiagnosticCode =
   | "AUTH_SERVICES_UNAVAILABLE"
   | "AUTH_CLIENT_IP_INVALID"
   | "AUTH_UNEXPECTED_INTERNAL"
+  | "AUTH_DATABASE_QUERY_FAILED"
+  | "AUTH_PASSWORD_VERIFIER_FAILED"
+  | "AUTH_CREDENTIAL_RECORD_INVALID"
   | "AUTH_BOOKKEEPING_DEGRADED";
 
 export type DiagnosticCode = RateLimitDiagnosticCode | AuthDiagnosticCode;
@@ -93,6 +99,9 @@ export const DIAGNOSTIC_STAGES: readonly DiagnosticStage[] = [
   "auth.rate_limit.ip",
   "auth.rate_limit.email",
   "auth.verify",
+  "auth.verify.repository",
+  "auth.verify.password",
+  "auth.verify.record",
   "auth.bookkeeping",
   "ratelimit.probe",
 ];
@@ -110,6 +119,9 @@ export const DIAGNOSTIC_CODES: readonly DiagnosticCode[] = [
   "AUTH_SERVICES_UNAVAILABLE",
   "AUTH_CLIENT_IP_INVALID",
   "AUTH_UNEXPECTED_INTERNAL",
+  "AUTH_DATABASE_QUERY_FAILED",
+  "AUTH_PASSWORD_VERIFIER_FAILED",
+  "AUTH_CREDENTIAL_RECORD_INVALID",
   "AUTH_BOOKKEEPING_DEGRADED",
 ];
 

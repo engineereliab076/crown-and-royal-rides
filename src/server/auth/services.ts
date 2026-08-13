@@ -27,6 +27,16 @@ export interface AuthServices {
   readonly authRateLimiter: AuthRateLimiter;
 }
 
+/** Safe setup failure for the fail-closed authentication limiter. */
+export class AuthRateLimiterConfigurationError extends Error {
+  readonly code = "AUTH_RATE_LIMITER_CONFIGURATION";
+
+  constructor() {
+    super("Authentication rate limiting is unavailable or misconfigured.");
+    this.name = "AuthRateLimiterConfigurationError";
+  }
+}
+
 const LOCAL_HASH_SECRET_FALLBACK =
   "crown-and-royal-rides:auth-rate-limit:local-development-fallback";
 
@@ -56,13 +66,18 @@ function build(): AuthServices {
   const repository = createPrismaAuthRepository(prisma);
   const authService = createAuthService({ repository });
 
-  const container = getIntegrationContainer();
-  const usesSharedBackend =
-    container.mode.providers.rateLimiter !== "in-memory";
-  const authRateLimiter = createAuthRateLimiter({
-    rateLimiter: container.rateLimiter,
-    hashSecret: resolveHashSecret(usesSharedBackend),
-  });
+  let authRateLimiter: AuthRateLimiter;
+  try {
+    const container = getIntegrationContainer();
+    const usesSharedBackend =
+      container.mode.providers.rateLimiter !== "in-memory";
+    authRateLimiter = createAuthRateLimiter({
+      rateLimiter: container.rateLimiter,
+      hashSecret: resolveHashSecret(usesSharedBackend),
+    });
+  } catch {
+    throw new AuthRateLimiterConfigurationError();
+  }
 
   return Object.freeze({ authService, authRateLimiter });
 }

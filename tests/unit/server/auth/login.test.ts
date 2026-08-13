@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AdminRole } from "@/generated/prisma/enums";
 import { performLogin, type LoginDependencies } from "@/server/auth/login";
+import { AppError } from "@/server/http/errors";
 import { InMemoryRateLimiter } from "@/server/integrations/rate-limiter/in-memory";
 import type { RateLimiter } from "@/server/integrations/rate-limiter/interface";
+import type { RateLimitDecision } from "@/server/modules/auth/rate-limit";
 import { createAuthRateLimiter } from "@/server/modules/auth/rate-limit";
 import type { CredentialAdmin } from "@/server/modules/auth/repository";
+import type { AuthenticatedAdmin } from "@/server/modules/auth/service";
 import { createAuthService } from "@/server/modules/auth/service";
 
 import { FakeAuthRepository } from "../modules/auth/support/fake-auth-repository";
@@ -32,6 +35,50 @@ function record(overrides: Partial<CredentialAdmin> = {}): CredentialAdmin {
     mustChangePassword: false,
     ...overrides,
   };
+}
+
+const AUTHENTICATED_ADMIN: AuthenticatedAdmin = {
+  id: OWNER_ID,
+  email: EMAIL,
+  name: "Test Owner",
+  role: AdminRole.owner,
+  sessionVersion: 1,
+  mustChangePassword: false,
+};
+
+/**
+ * A deps builder with fully controllable stubs, used to exercise the safe
+ * classification paths (unexpected verification errors, best-effort bookkeeping)
+ * without depending on the real Argon2 verifier or limiter internals.
+ */
+function stubDeps(overrides: {
+  verifyCredentials?: LoginDependencies["authService"]["verifyCredentials"];
+  recordLogin?: LoginDependencies["authService"]["recordLogin"];
+  checkLoginIp?: LoginDependencies["authRateLimiter"]["checkLoginIp"];
+  recordLoginFailure?: LoginDependencies["authRateLimiter"]["recordLoginFailure"];
+  reportFailure?: LoginDependencies["reportFailure"];
+}): LoginDependencies {
+  const allowed: RateLimitDecision = { allowed: true };
+  return {
+    authService: {
+      verifyCredentials:
+        overrides.verifyCredentials ?? (async () => AUTHENTICATED_ADMIN),
+      recordLogin: overrides.recordLogin ?? vi.fn(async () => {}),
+    },
+    authRateLimiter: {
+      checkLoginIp: overrides.checkLoginIp ?? (async () => allowed),
+      recordLoginFailure: overrides.recordLoginFailure ?? (async () => allowed),
+    },
+    reportFailure: overrides.reportFailure,
+  };
+}
+
+function invalidCredentials(): AppError {
+  return new AppError({
+    status: 401,
+    code: "AUTH_INVALID_CREDENTIALS",
+    message: "Invalid email or password.",
+  });
 }
 
 function harness() {
@@ -237,7 +284,7 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
         recordLogin: vi.fn(async () => {}),
       },
       authRateLimiter: {
-        checkLoginIp: async () => ({ allowed: false }),
+        checkLoginIp: async () => ({ allowed: false, reason: "limited" }),
         recordLoginFailure,
       },
     };
@@ -252,7 +299,7 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
     expect(recordLoginFailure).not.toHaveBeenCalled();
   });
 
-  it("fails closed and skips verification when the limiter provider throws", async () => {
+  it("fails closed as rate_limiter_unavailable when the limiter provider throws", async () => {
     const providerMarker = "RAW_RATE_LIMIT_PROVIDER_FAILURE";
     const throwingLimiter: RateLimiter = {
       async check() {
@@ -260,6 +307,7 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
       },
     };
     const verifyCredentials = vi.fn();
+    const reportFailure = vi.fn();
     const deps: LoginDependencies = {
       authService: {
         verifyCredentials,
@@ -269,6 +317,7 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
         rateLimiter: throwingLimiter,
         hashSecret: HASH_SECRET,
       }),
+      reportFailure,
     };
 
     const outcome = await performLogin(
@@ -276,12 +325,206 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
       deps,
     );
 
-    expect(outcome).toEqual({ status: "rate_limited" });
+    // Fail-closed still denies the attempt, but as an unavailable-limiter
+    // classification — never as invalid credentials — so authorize maps it to a
+    // non-CredentialsSignin AuthenticationUnavailable rather than a generic
+    // CredentialsSignin.
+    expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
     expect(verifyCredentials).not.toHaveBeenCalled();
+    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
     const serialized = JSON.stringify(outcome);
     expect(serialized).not.toContain(providerMarker);
     expect(serialized).not.toContain(EMAIL);
     expect(serialized).not.toContain(PASSWORD);
     expect(serialized).not.toContain("1.2.3.4");
+  });
+});
+
+describe("performLogin — best-effort post-auth bookkeeping", () => {
+  it("still succeeds when recordLogin fails, and reports it as bookkeeping", async () => {
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      recordLogin: async () => {
+        throw new Error("timestamp write failed");
+      },
+      reportFailure,
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: PASSWORD, ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toMatchObject({ status: "ok" });
+    if (outcome.status === "ok") expect(outcome.admin.id).toBe(OWNER_ID);
+    expect(reportFailure).toHaveBeenCalledWith("post_auth_bookkeeping");
+  });
+
+  it("still succeeds when the safe post-auth reporter itself throws", async () => {
+    const deps = stubDeps({
+      recordLogin: async () => {
+        throw new Error("timestamp write failed");
+      },
+      reportFailure: () => {
+        // A broken diagnostics sink must never change the auth outcome.
+        throw new Error("reporter is down");
+      },
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: PASSWORD, ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toMatchObject({ status: "ok" });
+  });
+
+  it("succeeds without touching the reporter when bookkeeping succeeds", async () => {
+    const reportFailure = vi.fn();
+    const deps = stubDeps({ reportFailure });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: PASSWORD, ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toMatchObject({ status: "ok" });
+    expect(reportFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe("performLogin — safe failure classification", () => {
+  it("keeps genuine wrong credentials as a generic invalid result", async () => {
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw invalidCredentials();
+      },
+      reportFailure,
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: "wrong-password", ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toEqual({ status: "invalid" });
+    // A genuine credential rejection is not an internal/provider fault.
+    expect(reportFailure).not.toHaveBeenCalled();
+  });
+
+  it("maps a genuine email lockout to rate_limited, not unavailable", async () => {
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw invalidCredentials();
+      },
+      recordLoginFailure: async () => ({ allowed: false, reason: "limited" }),
+      reportFailure,
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: "wrong-password", ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toEqual({ status: "rate_limited" });
+    expect(reportFailure).not.toHaveBeenCalled();
+  });
+
+  it("maps an unavailable email limiter to rate_limiter_unavailable", async () => {
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw invalidCredentials();
+      },
+      recordLoginFailure: async () => ({
+        allowed: false,
+        reason: "unavailable",
+      }),
+      reportFailure,
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: "wrong-password", ip: "203.0.113.7" },
+      deps,
+    );
+
+    expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
+    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
+  });
+
+  it("maps an unavailable IP limiter decision to rate_limiter_unavailable", async () => {
+    const verifyCredentials = vi.fn();
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials,
+      checkLoginIp: async () => ({ allowed: false, reason: "unavailable" }),
+      reportFailure,
+    });
+
+    const outcome = await performLogin(
+      { email: EMAIL, password: PASSWORD, ip: "1.2.3.4" },
+      deps,
+    );
+
+    expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
+    expect(verifyCredentials).not.toHaveBeenCalled();
+    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
+  });
+
+  it("rethrows an unexpected verification error instead of labeling it invalid", async () => {
+    const boom = new Error("prisma connection reset");
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw boom;
+      },
+      recordLoginFailure: vi.fn(),
+      reportFailure,
+    });
+
+    await expect(
+      performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
+    ).rejects.toBe(boom);
+    expect(reportFailure).toHaveBeenCalledWith("unexpected_internal");
+    // An unexpected fault must never spend the email failure allowance.
+    expect(deps.authRateLimiter.recordLoginFailure).not.toHaveBeenCalled();
+  });
+
+  it("treats a non-credential AppError as unexpected and rethrows it", async () => {
+    const other = new AppError({
+      status: 500,
+      code: "DATABASE_UNAVAILABLE",
+      message: "The database is unavailable.",
+    });
+    const reportFailure = vi.fn();
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw other;
+      },
+      reportFailure,
+    });
+
+    await expect(
+      performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
+    ).rejects.toBe(other);
+    expect(reportFailure).toHaveBeenCalledWith("unexpected_internal");
+  });
+
+  it("does not let a throwing reporter mask the rethrown internal error", async () => {
+    const boom = new Error("prisma connection reset");
+    const deps = stubDeps({
+      verifyCredentials: async () => {
+        throw boom;
+      },
+      reportFailure: () => {
+        throw new Error("reporter is down");
+      },
+    });
+
+    await expect(
+      performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
+    ).rejects.toBe(boom);
   });
 });

@@ -5,6 +5,10 @@ import { unstable_rethrow } from "next/navigation";
 
 import { resolveSafeAdminPath } from "@/lib/safe-redirect";
 import { signIn } from "@/server/auth";
+import {
+  AuthenticationInternalFailure,
+  AuthenticationUnavailable,
+} from "@/server/auth/errors";
 import { loginCredentialsSchema } from "@/server/modules/auth/schemas";
 
 export interface LoginState {
@@ -14,6 +18,8 @@ export interface LoginState {
 const GENERIC_FAILURE = "Invalid email or password.";
 const RATE_LIMITED =
   "Too many attempts. Please wait a few minutes and try again.";
+const AUTHENTICATION_UNAVAILABLE =
+  "Unable to sign in right now. Please try again shortly.";
 
 /**
  * Login server action. Validates input, delegates to Auth.js `signIn`, and maps
@@ -50,7 +56,14 @@ export async function loginAction(
     if (error instanceof CredentialsSignin && error.code === "rate_limited") {
       return { error: RATE_LIMITED };
     }
-    if (error instanceof AuthError) return { error: GENERIC_FAILURE };
+    if (error instanceof CredentialsSignin) return { error: GENERIC_FAILURE };
+    if (
+      error instanceof AuthenticationUnavailable ||
+      error instanceof AuthenticationInternalFailure
+    ) {
+      return { error: AUTHENTICATION_UNAVAILABLE };
+    }
+    if (error instanceof AuthError) throw error;
     throw error;
   }
 

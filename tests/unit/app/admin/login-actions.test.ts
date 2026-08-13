@@ -32,6 +32,10 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
+import {
+  AuthenticationInternalFailure,
+  AuthenticationUnavailable,
+} from "@/server/auth/errors";
 import { loginAction } from "@/app/admin/login/actions";
 
 const EMAIL = "owner@example.test";
@@ -39,6 +43,8 @@ const PASSWORD = "Temporary-Password-9!";
 const GENERIC_FAILURE = "Invalid email or password.";
 const RATE_LIMITED =
   "Too many attempts. Please wait a few minutes and try again.";
+const AUTHENTICATION_UNAVAILABLE =
+  "Unable to sign in right now. Please try again shortly.";
 
 function form(callbackUrl: string = "/admin"): FormData {
   const data = new FormData();
@@ -104,12 +110,29 @@ describe("loginAction", () => {
     );
   });
 
-  it("translates genuine non-credential Auth.js failures safely", async () => {
-    mocks.signIn.mockRejectedValue(new AuthError("authentication failed"));
+  it("surfaces an unavailable rate limiter as a distinct, account-neutral message", async () => {
+    mocks.signIn.mockRejectedValue(new AuthenticationUnavailable());
 
     await expect(loginAction({}, form())).resolves.toEqual({
-      error: GENERIC_FAILURE,
+      error: AUTHENTICATION_UNAVAILABLE,
     });
+  });
+
+  it("surfaces an unexpected internal failure as the unavailable message", async () => {
+    mocks.signIn.mockRejectedValue(new AuthenticationInternalFailure());
+
+    await expect(loginAction({}, form())).resolves.toEqual({
+      error: AUTHENTICATION_UNAVAILABLE,
+    });
+  });
+
+  it("rethrows a generic non-credential Auth.js error instead of hiding it", async () => {
+    // A bare AuthError is neither a credential rejection nor one of our safe
+    // classifications, so it must not be masked as invalid credentials.
+    const error = new AuthError("authentication failed");
+    mocks.signIn.mockRejectedValue(error);
+
+    await expect(loginAction({}, form())).rejects.toBe(error);
   });
 
   it.each([

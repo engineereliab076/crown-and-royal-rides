@@ -1,16 +1,27 @@
 import "server-only";
 
-import NextAuth, { CredentialsSignin } from "next-auth";
+import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 
+import { createCorrelationId } from "@/lib/correlation";
 import { getClientIp } from "@/server/http/client-ip";
+import {
+  AuthenticationInternalFailure,
+  AuthenticationUnavailable,
+  RateLimitedSignin,
+} from "@/server/auth/errors";
 import {
   applyUserToToken,
   buildValidatedSession,
 } from "@/server/auth/callbacks";
 import { authEdgeConfig } from "@/server/auth/edge-config";
 import { performLogin } from "@/server/auth/login";
-import { getAuthServices } from "@/server/auth/services";
+import {
+  AuthRateLimiterConfigurationError,
+  getAuthServices,
+} from "@/server/auth/services";
+import { getIntegrationContainer } from "@/server/integrations/container";
+import type { LoginFailureClassification } from "@/server/auth/login";
 import { loginCredentialsSchema } from "@/server/modules/auth/schemas";
 
 /**
@@ -24,9 +35,24 @@ import { loginCredentialsSchema } from "@/server/modules/auth/schemas";
  * details never surface to the client.
  */
 
-/** Distinguishable, non-sensitive code so the login UI can show a lockout note. */
-export class RateLimitedSignin extends CredentialsSignin {
-  code = "rate_limited";
+async function reportAuthenticationFailure(
+  correlationId: string,
+  classification: LoginFailureClassification,
+): Promise<void> {
+  try {
+    await getIntegrationContainer().errorReporter.captureMessage(
+      "Authentication failure classified.",
+      classification === "unexpected_internal" ? "error" : "warning",
+      {
+        correlationId,
+        method: "POST",
+        route: "/api/admin/auth/callback/credentials",
+        additional: { classification },
+      },
+    );
+  } catch {
+    // Reporting and reporter resolution are always best-effort.
+  }
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -42,20 +68,50 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
 
         const { email, password } = parsed.data;
-        const { authService, authRateLimiter } = getAuthServices();
-        const ip = getClientIp(request.headers);
+        const correlationId = createCorrelationId();
+        const reportFailure = (classification: LoginFailureClassification) =>
+          reportAuthenticationFailure(correlationId, classification);
+
+        let authServices;
+        try {
+          authServices = getAuthServices();
+        } catch (error) {
+          if (error instanceof AuthRateLimiterConfigurationError) {
+            await reportFailure("rate_limiter_unavailable");
+            throw new AuthenticationUnavailable();
+          }
+          await reportFailure("unexpected_internal");
+          throw new AuthenticationInternalFailure();
+        }
+
+        let ip: string | null;
+        try {
+          ip = getClientIp(request.headers);
+        } catch {
+          await reportFailure("unexpected_internal");
+          throw new AuthenticationInternalFailure();
+        }
 
         // Ordering and counting live in performLogin: IP consumed before Argon2
         // (bounds all attempts, fail-closed), email failure allowance consumed
         // only on a failed verification (successes never spend it).
-        const outcome = await performLogin(
-          { email, password, ip },
-          { authService, authRateLimiter },
-        );
+        let outcome;
+        try {
+          outcome = await performLogin(
+            { email, password, ip },
+            { ...authServices, reportFailure },
+          );
+        } catch {
+          // performLogin already reported the PII-free internal classification.
+          throw new AuthenticationInternalFailure();
+        }
 
         if (outcome.status === "rate_limited") {
           // Lockout / fail-closed: distinguishable code, no account disclosure.
           throw new RateLimitedSignin();
+        }
+        if (outcome.status === "rate_limiter_unavailable") {
+          throw new AuthenticationUnavailable();
         }
         if (outcome.status === "invalid") {
           // Generic failure: never expose AppError details or credentials.

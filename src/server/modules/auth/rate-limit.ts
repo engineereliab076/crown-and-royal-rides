@@ -49,10 +49,14 @@ export const PASSWORD_CHANGE_POLICY: RateLimitPolicy = {
   windowMs: FIFTEEN_MINUTES_MS,
 };
 
-export interface RateLimitDecision {
-  readonly allowed: boolean;
-  readonly retryAfterMs?: number;
-}
+export type RateLimitDecision =
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly reason: "limited";
+      readonly retryAfterMs?: number;
+    }
+  | { readonly allowed: false; readonly reason: "unavailable" };
 
 export interface AuthRateLimiterDependencies {
   readonly rateLimiter: RateLimiter;
@@ -101,11 +105,15 @@ export function createAuthRateLimiter(
       const result = await rateLimiter.check(keyFor(scope, value), policy);
       if (result.allowed) return { allowed: true };
       return result.retryAfterMs === undefined
-        ? { allowed: false }
-        : { allowed: false, retryAfterMs: result.retryAfterMs };
+        ? { allowed: false, reason: "limited" }
+        : {
+            allowed: false,
+            reason: "limited",
+            retryAfterMs: result.retryAfterMs,
+          };
     } catch {
-      // Fail-closed: a limiter outage denies the attempt.
-      return { allowed: false };
+      // Fail-closed, but preserve the safe distinction from a real lockout.
+      return { allowed: false, reason: "unavailable" };
     }
   }
 

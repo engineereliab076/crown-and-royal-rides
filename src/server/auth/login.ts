@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isAppError } from "@/server/http/errors";
 import type { AuthRateLimiter } from "@/server/modules/auth/rate-limit";
 import type {
   AuthenticatedAdmin,
@@ -27,7 +28,15 @@ import type {
 export type LoginOutcome =
   | { readonly status: "ok"; readonly admin: AuthenticatedAdmin }
   | { readonly status: "invalid" }
-  | { readonly status: "rate_limited" };
+  | { readonly status: "rate_limited" }
+  | { readonly status: "rate_limiter_unavailable" };
+
+export type LoginFailureClassification =
+  "rate_limiter_unavailable" | "unexpected_internal" | "post_auth_bookkeeping";
+
+export type LoginFailureReporter = (
+  classification: LoginFailureClassification,
+) => void | Promise<void>;
 
 export interface LoginInput {
   readonly email: string;
@@ -41,6 +50,19 @@ export interface LoginDependencies {
     AuthRateLimiter,
     "checkLoginIp" | "recordLoginFailure"
   >;
+  /** PII-free, best-effort reporting of non-credential failures. */
+  readonly reportFailure?: LoginFailureReporter;
+}
+
+async function reportSafely(
+  reporter: LoginFailureReporter | undefined,
+  classification: LoginFailureClassification,
+): Promise<void> {
+  try {
+    await reporter?.(classification);
+  } catch {
+    // Diagnostics must never change an authentication outcome.
+  }
 }
 
 export async function performLogin(
@@ -50,8 +72,20 @@ export async function performLogin(
   const { authService, authRateLimiter } = deps;
 
   // 1) Per-IP gate BEFORE Argon2 (counts every attempt; fail-closed on outage).
-  const ipDecision = await authRateLimiter.checkLoginIp(input.ip);
-  if (!ipDecision.allowed) return { status: "rate_limited" };
+  let ipDecision;
+  try {
+    ipDecision = await authRateLimiter.checkLoginIp(input.ip);
+  } catch {
+    await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+    return { status: "rate_limiter_unavailable" };
+  }
+  if (!ipDecision.allowed) {
+    if (ipDecision.reason === "unavailable") {
+      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+      return { status: "rate_limiter_unavailable" };
+    }
+    return { status: "rate_limited" };
+  }
 
   // 2) Verify credentials (Argon2). Unknown email, wrong password, inactive
   //    account, and malformed hash all raise the same generic error.
@@ -61,12 +95,26 @@ export async function performLogin(
       email: input.email,
       password: input.password,
     });
-  } catch {
+  } catch (error) {
+    if (!isAppError(error) || error.code !== "AUTH_INVALID_CREDENTIALS") {
+      await reportSafely(deps.reportFailure, "unexpected_internal");
+      throw error;
+    }
+
     // 3) Failed attempt → consume the per-email FAILURE allowance only.
-    const emailDecision = await authRateLimiter.recordLoginFailure(input.email);
-    return emailDecision.allowed
-      ? { status: "invalid" }
-      : { status: "rate_limited" };
+    let emailDecision;
+    try {
+      emailDecision = await authRateLimiter.recordLoginFailure(input.email);
+    } catch {
+      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+      return { status: "rate_limiter_unavailable" };
+    }
+    if (emailDecision.allowed) return { status: "invalid" };
+    if (emailDecision.reason === "unavailable") {
+      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+      return { status: "rate_limiter_unavailable" };
+    }
+    return { status: "rate_limited" };
   }
 
   // 4) Success → the email failure counter is never consumed.
@@ -74,6 +122,7 @@ export async function performLogin(
     await authService.recordLogin(admin.id);
   } catch {
     // Best-effort; a failed timestamp write must never block login.
+    await reportSafely(deps.reportFailure, "post_auth_bookkeeping");
   }
   return { status: "ok", admin };
 }

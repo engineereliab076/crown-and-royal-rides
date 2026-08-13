@@ -61,6 +61,30 @@ describe("serializeDiagnosticEvent", () => {
     expect(parsed).not.toHaveProperty("safeStatus");
   });
 
+  it("includes only allow-listed missing-config variable names", () => {
+    const line = serializeDiagnosticEvent(
+      event({
+        code: "RATE_LIMIT_CONFIGURATION_MISSING",
+        stage: "auth.services",
+        integration: undefined,
+        safeStatus: undefined,
+        missing: [
+          "IP_HASH_SECRET",
+          // A non-allow-listed entry must be dropped from the output.
+          "SOME_SECRET_VALUE" as unknown as "IP_HASH_SECRET",
+        ],
+      }),
+    );
+    const parsed = JSON.parse(line);
+    expect(parsed.missing).toEqual(["IP_HASH_SECRET"]);
+    expect(line).not.toContain("SOME_SECRET_VALUE");
+  });
+
+  it("omits missing entirely when there is nothing safe to report", () => {
+    const line = serializeDiagnosticEvent(event({ missing: [] }));
+    expect(JSON.parse(line)).not.toHaveProperty("missing");
+  });
+
   it("drops any stray field injected onto the event object", () => {
     const tainted = {
       ...event(),

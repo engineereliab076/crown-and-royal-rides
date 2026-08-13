@@ -557,6 +557,24 @@ describe("upstash group", () => {
     const env = parseEnv({ ...productionUrls(), ...upstashGroup("prod:") });
     expect(env.RATE_LIMIT_NAMESPACE).toBe("prod:");
   });
+
+  it("preserves all three production Upstash variables through parsing", () => {
+    // Regression: the exact Production shape must not drop any of the three
+    // variables at the env boundary (they were wrongly reported as missing).
+    const env = parseEnv({ ...productionUrls(), ...upstashGroup("prod:") });
+    expect(env.UPSTASH_REDIS_REST_URL).toBe("https://redis.example.com");
+    expect(env.UPSTASH_REDIS_REST_TOKEN).toBe("demo-token");
+    expect(env.RATE_LIMIT_NAMESPACE).toBe("prod:");
+  });
+
+  it("still parses a production Upstash group when IP_HASH_SECRET is absent", () => {
+    // The schema does not require IP_HASH_SECRET, so a deployment can be valid
+    // yet unable to configure the shared limiter — the gap the diagnostic must
+    // name (rather than blaming the present Upstash variables).
+    const env = parseEnv({ ...productionUrls(), ...upstashGroup("prod:") });
+    expect(env.IP_HASH_SECRET).toBeUndefined();
+    expect(env.UPSTASH_REDIS_REST_URL).toBe("https://redis.example.com");
+  });
 });
 
 // --- Sentry group --------------------------------------------------------

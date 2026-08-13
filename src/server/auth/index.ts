@@ -99,6 +99,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               stage: "auth.services",
               code: "RATE_LIMIT_CONFIGURATION_MISSING",
               severity: "error",
+              // Names only (never values), so the real gap is visible in logs —
+              // e.g. IP_HASH_SECRET rather than the already-present Upstash vars.
+              ...(error.missing.length > 0 ? { missing: error.missing } : {}),
             });
             throw new AuthenticationUnavailable(correlationId);
           }

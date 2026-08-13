@@ -47,6 +47,21 @@ describe("buildLoginDiagnosticEvent", () => {
     expect(event.safeStatus).toBeUndefined();
   });
 
+  it("carries the missing configuration variable names for a services gap", () => {
+    const event = buildLoginDiagnosticEvent(
+      CORRELATION_ID,
+      {
+        stage: "auth.services",
+        code: "RATE_LIMIT_CONFIGURATION_MISSING",
+        severity: "error",
+        missing: ["IP_HASH_SECRET"],
+      },
+      fixedNow,
+    );
+    expect(event.missing).toEqual(["IP_HASH_SECRET"]);
+    expect(event.integration).toBeUndefined();
+  });
+
   it("never carries anything beyond the allow-listed fields", () => {
     const event = buildLoginDiagnosticEvent(
       CORRELATION_ID,

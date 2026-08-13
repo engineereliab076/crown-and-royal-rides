@@ -2,6 +2,7 @@ import "server-only";
 
 import type {
   DiagnosticCode,
+  DiagnosticConfigVariable,
   DiagnosticSeverity,
   DiagnosticStage,
 } from "@/server/diagnostics/events";
@@ -46,6 +47,8 @@ export interface LoginDiagnostic {
   readonly stage: DiagnosticStage;
   readonly code: DiagnosticCode;
   readonly severity: DiagnosticSeverity;
+  /** Absent configuration variable names, when a config gap is the cause. */
+  readonly missing?: readonly DiagnosticConfigVariable[];
 }
 
 export type LoginFailureReporter = (

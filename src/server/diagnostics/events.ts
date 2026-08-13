@@ -50,6 +50,21 @@ export type DiagnosticCode = RateLimitDiagnosticCode | AuthDiagnosticCode;
 /** The external system a stage interacts with, when relevant. */
 export type DiagnosticIntegration = "rate_limiter";
 
+/**
+ * Configuration variable *names* that a diagnostic may report as missing. These
+ * are public configuration keys — never their values — so they are safe to log.
+ * The allow-list guarantees no other string can be serialized as "missing".
+ */
+export const DIAGNOSTIC_CONFIG_VARIABLES = [
+  "UPSTASH_REDIS_REST_URL",
+  "UPSTASH_REDIS_REST_TOKEN",
+  "RATE_LIMIT_NAMESPACE",
+  "IP_HASH_SECRET",
+] as const;
+
+export type DiagnosticConfigVariable =
+  (typeof DIAGNOSTIC_CONFIG_VARIABLES)[number];
+
 export interface SafeDiagnosticEvent {
   readonly correlationId: string;
   readonly code: DiagnosticCode;
@@ -60,6 +75,8 @@ export interface SafeDiagnosticEvent {
   readonly integration?: DiagnosticIntegration;
   /** Coarse, machine-derived status class (never a raw provider status/body). */
   readonly safeStatus?: number;
+  /** Absent configuration variable *names* (never values). */
+  readonly missing?: readonly DiagnosticConfigVariable[];
   /** ISO-8601 UTC timestamp. */
   readonly timestamp: string;
 }
@@ -145,6 +162,27 @@ export function isDiagnosticIntegration(
   );
 }
 
+export function isDiagnosticConfigVariable(
+  value: unknown,
+): value is DiagnosticConfigVariable {
+  return (
+    typeof value === "string" &&
+    DIAGNOSTIC_CONFIG_VARIABLES.includes(value as DiagnosticConfigVariable)
+  );
+}
+
+/** Filter an arbitrary list down to the allow-listed config variable names. */
+export function safeMissingConfig(
+  missing: readonly string[] | undefined,
+): readonly DiagnosticConfigVariable[] {
+  if (!Array.isArray(missing)) return [];
+  const seen = new Set<DiagnosticConfigVariable>();
+  for (const entry of missing) {
+    if (isDiagnosticConfigVariable(entry)) seen.add(entry);
+  }
+  return [...seen];
+}
+
 /** The coarse safe status for a code, if one is defined. */
 export function safeStatusForCode(code: DiagnosticCode): number | undefined {
   return SAFE_STATUS_BY_CODE[code];
@@ -156,7 +194,7 @@ export function safeStatusForCode(code: DiagnosticCode): number | undefined {
  * field failing validation is omitted — the output can never carry stray data.
  */
 export function serializeDiagnosticEvent(event: SafeDiagnosticEvent): string {
-  const safe: Record<string, string | number> = {
+  const safe: Record<string, string | number | readonly string[]> = {
     evt: "diagnostic",
     correlationId: event.correlationId,
     code: event.code,
@@ -175,6 +213,10 @@ export function serializeDiagnosticEvent(event: SafeDiagnosticEvent): string {
   }
   if (Number.isSafeInteger(event.safeStatus)) {
     safe.safeStatus = event.safeStatus as number;
+  }
+  const missing = safeMissingConfig(event.missing);
+  if (missing.length > 0) {
+    safe.missing = missing;
   }
   return JSON.stringify(safe);
 }

@@ -79,6 +79,9 @@ export function emitDiagnosticEvent(
             ...(event.safeStatus !== undefined
               ? { safeStatus: event.safeStatus }
               : {}),
+            ...(event.missing !== undefined && event.missing.length > 0
+              ? { missing: [...event.missing] }
+              : {}),
           },
         });
       } catch {

@@ -42,6 +42,9 @@ export function buildLoginDiagnosticEvent(
       ? { integration: "rate_limiter" as const }
       : {}),
     ...(safeStatus !== undefined ? { safeStatus } : {}),
+    ...(diagnostic.missing !== undefined && diagnostic.missing.length > 0
+      ? { missing: diagnostic.missing }
+      : {}),
     timestamp: now().toISOString(),
   };
 }

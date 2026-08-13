@@ -65,6 +65,29 @@ describe("emitDiagnosticEvent", () => {
     }
   });
 
+  it("forwards missing-config names to both the line and the reporter", () => {
+    const { sink, lines } = captureSink();
+    const reporter = new InMemoryErrorReporter();
+    emitDiagnosticEvent(
+      event({
+        code: "RATE_LIMIT_CONFIGURATION_MISSING",
+        stage: "auth.services",
+        integration: undefined,
+        safeStatus: undefined,
+        missing: ["IP_HASH_SECRET"],
+      }),
+      { sink, reporter },
+    );
+
+    expect(JSON.parse(lines[0] as string).missing).toEqual(["IP_HASH_SECRET"]);
+    const report = reporter.getReports()[0];
+    if (report?.type === "message") {
+      expect(report.context.additional).toMatchObject({
+        missing: ["IP_HASH_SECRET"],
+      });
+    }
+  });
+
   it("never emits an event that fails validation", () => {
     const { sink, lines } = captureSink();
     emitDiagnosticEvent(

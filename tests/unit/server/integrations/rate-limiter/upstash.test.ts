@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { errors as upstashErrors } from "@upstash/redis";
 
+import { RateLimitProviderError } from "@/server/integrations/rate-limiter/classify";
 import { IntegrationUnavailableError } from "@/server/integrations/errors";
 import { InMemoryRateLimiter } from "@/server/integrations/rate-limiter/in-memory";
 import {
@@ -7,6 +9,8 @@ import {
   type UpstashLimiterFactory,
 } from "@/server/integrations/rate-limiter/upstash";
 import { runRateLimiterContract } from "./contract";
+
+const { UpstashError } = upstashErrors;
 
 function configuration(maxPolicies?: number) {
   return {
@@ -130,5 +134,97 @@ describe("UpstashRateLimiter provider mapping", () => {
       limiter.check(" ", { limit: 1, windowMs: 1_000 }),
     ).rejects.toThrow(TypeError);
     expect(factory).not.toHaveBeenCalled();
+  });
+});
+
+describe("UpstashRateLimiter — safe failure classification", () => {
+  async function codeFor(
+    limitImpl: () => Promise<{
+      success: boolean;
+      limit: number;
+      remaining: number;
+      reset: number;
+      reason?: string;
+    }>,
+  ): Promise<string> {
+    const limiter = new UpstashRateLimiter(configuration(), () => ({
+      limit: limitImpl,
+    }));
+    try {
+      await limiter.check("fake-key", { limit: 1, windowMs: 1_000 });
+      return "NO_THROW";
+    } catch (error) {
+      expect(error).toBeInstanceOf(RateLimitProviderError);
+      expect(error).toBeInstanceOf(IntegrationUnavailableError);
+      return (error as RateLimitProviderError).diagnosticCode;
+    }
+  }
+
+  it("maps an unauthorized provider error to the unauthorized code", async () => {
+    const code = await codeFor(async () => {
+      throw new UpstashError('Unauthorized, command was: ["INCR","k"]');
+    });
+    expect(code).toBe("RATE_LIMIT_PROVIDER_UNAUTHORIZED");
+  });
+
+  it("converts the library fail-open timeout sentinel into a fail-closed timeout", async () => {
+    // @upstash/ratelimit resolves this shape when its own deadline elapses.
+    const code = await codeFor(async () => ({
+      success: true,
+      limit: 0,
+      remaining: 0,
+      reset: 0,
+      reason: "timeout",
+    }));
+    expect(code).toBe("RATE_LIMIT_PROVIDER_TIMEOUT");
+  });
+
+  it("maps a malformed response to the response-invalid code", async () => {
+    const code = await codeFor(async () => ({
+      success: true,
+      limit: 999,
+      remaining: 0,
+      reset: 1_000,
+    }));
+    expect(code).toBe("RATE_LIMIT_PROVIDER_RESPONSE_INVALID");
+  });
+
+  it("treats a genuine block as a decision, not a provider failure", async () => {
+    const limiter = new UpstashRateLimiter(configuration(), () => ({
+      limit: async () => ({
+        success: false,
+        limit: 1,
+        remaining: 0,
+        reset: 5_000,
+      }),
+    }));
+    await expect(
+      limiter.check("fake-key", { limit: 1, windowMs: 1_000 }),
+    ).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("keeps identifiers, keys, and provider text out of the thrown error", async () => {
+    const secret = "auth:login:email:SECRETHASH";
+    const limiter = new UpstashRateLimiter(configuration(), () => ({
+      async limit() {
+        throw new UpstashError(
+          `Unauthorized for owner@example.com, command was: [\"INCR\",\"${secret}\"]`,
+        );
+      },
+    }));
+    let caught: unknown;
+    try {
+      await limiter.check("client-key", { limit: 1, windowMs: 1_000 });
+    } catch (error) {
+      caught = error;
+    }
+    const serialized = `${(caught as Error).message} ${JSON.stringify({
+      code: (caught as RateLimitProviderError).diagnosticCode,
+    })}`;
+    expect(serialized).not.toContain("owner@example.com");
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("client-key");
+    expect(serialized).not.toContain("fake-rest-token");
+    expect(serialized).not.toContain("fake-redis.example.test");
   });
 });

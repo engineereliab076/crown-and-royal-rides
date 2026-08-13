@@ -3,7 +3,10 @@ import "server-only";
 import { Ratelimit, type Duration } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
-import { IntegrationUnavailableError } from "@/server/integrations/errors";
+import {
+  classifyUpstashError,
+  RateLimitProviderError,
+} from "@/server/integrations/rate-limiter/classify";
 import type { RateLimiter } from "@/server/integrations/rate-limiter/interface";
 import type {
   RateLimitPolicy,
@@ -26,6 +29,12 @@ export interface UpstashLimitResponse {
   readonly limit: number;
   readonly remaining: number;
   readonly reset: number;
+  /**
+   * Present on the library's fail-open sentinel: `@upstash/ratelimit` resolves
+   * `{ success: true, limit: 0, reason: "timeout" }` when its internal deadline
+   * elapses. We treat that shape as a provider timeout (fail-closed) below.
+   */
+  readonly reason?: string;
 }
 
 export interface UpstashLimiterFacade {
@@ -141,7 +150,13 @@ export class UpstashRateLimiter implements RateLimiter {
         `${this.#namespace}${normalizedKey}`,
       );
       if (!validProviderResponse(response, normalizedPolicy)) {
-        throw new IntegrationUnavailableError();
+        // The library fails *open* on its internal timeout; our wrapper converts
+        // that (and any malformed response) into a fail-closed provider failure.
+        throw new RateLimitProviderError(
+          response.reason === "timeout"
+            ? "RATE_LIMIT_PROVIDER_TIMEOUT"
+            : "RATE_LIMIT_PROVIDER_RESPONSE_INVALID",
+        );
       }
 
       const now = readClock(this.#now);
@@ -155,8 +170,8 @@ export class UpstashRateLimiter implements RateLimiter {
           : { retryAfterMs: Math.max(response.reset - now, 0) }),
       });
     } catch (error) {
-      if (error instanceof IntegrationUnavailableError) throw error;
-      throw new IntegrationUnavailableError(error);
+      if (error instanceof RateLimitProviderError) throw error;
+      throw new RateLimitProviderError(classifyUpstashError(error), error);
     }
   }
 
@@ -181,7 +196,7 @@ export class UpstashRateLimiter implements RateLimiter {
         namespace: this.#namespace,
       });
     } catch (error) {
-      throw new IntegrationUnavailableError(error);
+      throw new RateLimitProviderError(classifyUpstashError(error), error);
     }
 
     if (this.#limiters.size >= this.#maxPolicies) {

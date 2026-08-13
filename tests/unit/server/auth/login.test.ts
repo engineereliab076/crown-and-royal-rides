@@ -331,7 +331,12 @@ describe("performLogin — IP gate ordering and fail-closed", () => {
     // CredentialsSignin.
     expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
     expect(verifyCredentials).not.toHaveBeenCalled();
-    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
+    // A raw (non-provider-typed) throw classifies to the generic provider code.
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.rate_limit.ip",
+      code: "RATE_LIMIT_PROVIDER_ERROR",
+      severity: "error",
+    });
     const serialized = JSON.stringify(outcome);
     expect(serialized).not.toContain(providerMarker);
     expect(serialized).not.toContain(EMAIL);
@@ -357,7 +362,12 @@ describe("performLogin — best-effort post-auth bookkeeping", () => {
 
     expect(outcome).toMatchObject({ status: "ok" });
     if (outcome.status === "ok") expect(outcome.admin.id).toBe(OWNER_ID);
-    expect(reportFailure).toHaveBeenCalledWith("post_auth_bookkeeping");
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.bookkeeping",
+      code: "AUTH_BOOKKEEPING_DEGRADED",
+      severity: "warning",
+    });
+    expect(reportFailure).toHaveBeenCalledTimes(1);
   });
 
   it("still succeeds when the safe post-auth reporter itself throws", async () => {
@@ -441,6 +451,7 @@ describe("performLogin — safe failure classification", () => {
       recordLoginFailure: async () => ({
         allowed: false,
         reason: "unavailable",
+        code: "RATE_LIMIT_PROVIDER_UNAUTHORIZED",
       }),
       reportFailure,
     });
@@ -451,7 +462,14 @@ describe("performLogin — safe failure classification", () => {
     );
 
     expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
-    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
+    // The stable provider code from the decision propagates to the diagnostic.
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.rate_limit.email",
+      code: "RATE_LIMIT_PROVIDER_UNAUTHORIZED",
+      severity: "error",
+    });
+    // Exactly one diagnostic per failure — never a duplicate event.
+    expect(reportFailure).toHaveBeenCalledTimes(1);
   });
 
   it("maps an unavailable IP limiter decision to rate_limiter_unavailable", async () => {
@@ -459,7 +477,11 @@ describe("performLogin — safe failure classification", () => {
     const reportFailure = vi.fn();
     const deps = stubDeps({
       verifyCredentials,
-      checkLoginIp: async () => ({ allowed: false, reason: "unavailable" }),
+      checkLoginIp: async () => ({
+        allowed: false,
+        reason: "unavailable",
+        code: "RATE_LIMIT_PROVIDER_TIMEOUT",
+      }),
       reportFailure,
     });
 
@@ -470,7 +492,11 @@ describe("performLogin — safe failure classification", () => {
 
     expect(outcome).toEqual({ status: "rate_limiter_unavailable" });
     expect(verifyCredentials).not.toHaveBeenCalled();
-    expect(reportFailure).toHaveBeenCalledWith("rate_limiter_unavailable");
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.rate_limit.ip",
+      code: "RATE_LIMIT_PROVIDER_TIMEOUT",
+      severity: "error",
+    });
   });
 
   it("rethrows an unexpected verification error instead of labeling it invalid", async () => {
@@ -487,7 +513,11 @@ describe("performLogin — safe failure classification", () => {
     await expect(
       performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
     ).rejects.toBe(boom);
-    expect(reportFailure).toHaveBeenCalledWith("unexpected_internal");
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.verify",
+      code: "AUTH_UNEXPECTED_INTERNAL",
+      severity: "error",
+    });
     // An unexpected fault must never spend the email failure allowance.
     expect(deps.authRateLimiter.recordLoginFailure).not.toHaveBeenCalled();
   });
@@ -509,7 +539,11 @@ describe("performLogin — safe failure classification", () => {
     await expect(
       performLogin({ email: EMAIL, password: PASSWORD, ip: "1.2.3.4" }, deps),
     ).rejects.toBe(other);
-    expect(reportFailure).toHaveBeenCalledWith("unexpected_internal");
+    expect(reportFailure).toHaveBeenCalledWith({
+      stage: "auth.verify",
+      code: "AUTH_UNEXPECTED_INTERNAL",
+      severity: "error",
+    });
   });
 
   it("does not let a throwing reporter mask the rethrown internal error", async () => {

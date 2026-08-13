@@ -1,6 +1,12 @@
 import "server-only";
 
+import type {
+  DiagnosticCode,
+  DiagnosticSeverity,
+  DiagnosticStage,
+} from "@/server/diagnostics/events";
 import { isAppError } from "@/server/http/errors";
+import { rateLimitCodeFrom } from "@/server/integrations/rate-limiter/classify";
 import type { AuthRateLimiter } from "@/server/modules/auth/rate-limit";
 import type {
   AuthenticatedAdmin,
@@ -31,14 +37,19 @@ export type LoginOutcome =
   | { readonly status: "rate_limited" }
   | { readonly status: "rate_limiter_unavailable" };
 
-export type LoginFailureClassification =
-  | "invalid_input"
-  | "rate_limiter_unavailable"
-  | "unexpected_internal"
-  | "post_auth_bookkeeping";
+/**
+ * A safe, structured diagnostic describing a non-credential failure. It carries
+ * only an allow-listed stage, a stable code, and a severity — never credentials,
+ * identifiers, or raw error content.
+ */
+export interface LoginDiagnostic {
+  readonly stage: DiagnosticStage;
+  readonly code: DiagnosticCode;
+  readonly severity: DiagnosticSeverity;
+}
 
 export type LoginFailureReporter = (
-  classification: LoginFailureClassification,
+  diagnostic: LoginDiagnostic,
 ) => void | Promise<void>;
 
 export interface LoginInput {
@@ -59,13 +70,20 @@ export interface LoginDependencies {
 
 async function reportSafely(
   reporter: LoginFailureReporter | undefined,
-  classification: LoginFailureClassification,
+  diagnostic: LoginDiagnostic,
 ): Promise<void> {
   try {
-    await reporter?.(classification);
+    await reporter?.(diagnostic);
   } catch {
     // Diagnostics must never change an authentication outcome.
   }
+}
+
+function providerUnavailable(
+  stage: DiagnosticStage,
+  code: DiagnosticCode,
+): LoginDiagnostic {
+  return { stage, code, severity: "error" };
 }
 
 export async function performLogin(
@@ -78,13 +96,19 @@ export async function performLogin(
   let ipDecision;
   try {
     ipDecision = await authRateLimiter.checkLoginIp(input.ip);
-  } catch {
-    await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+  } catch (error) {
+    await reportSafely(
+      deps.reportFailure,
+      providerUnavailable("auth.rate_limit.ip", rateLimitCodeFrom(error)),
+    );
     return { status: "rate_limiter_unavailable" };
   }
   if (!ipDecision.allowed) {
     if (ipDecision.reason === "unavailable") {
-      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+      await reportSafely(
+        deps.reportFailure,
+        providerUnavailable("auth.rate_limit.ip", ipDecision.code),
+      );
       return { status: "rate_limiter_unavailable" };
     }
     return { status: "rate_limited" };
@@ -100,7 +124,11 @@ export async function performLogin(
     });
   } catch (error) {
     if (!isAppError(error) || error.code !== "AUTH_INVALID_CREDENTIALS") {
-      await reportSafely(deps.reportFailure, "unexpected_internal");
+      await reportSafely(deps.reportFailure, {
+        stage: "auth.verify",
+        code: "AUTH_UNEXPECTED_INTERNAL",
+        severity: "error",
+      });
       throw error;
     }
 
@@ -108,13 +136,22 @@ export async function performLogin(
     let emailDecision;
     try {
       emailDecision = await authRateLimiter.recordLoginFailure(input.email);
-    } catch {
-      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+    } catch (limiterError) {
+      await reportSafely(
+        deps.reportFailure,
+        providerUnavailable(
+          "auth.rate_limit.email",
+          rateLimitCodeFrom(limiterError),
+        ),
+      );
       return { status: "rate_limiter_unavailable" };
     }
     if (emailDecision.allowed) return { status: "invalid" };
     if (emailDecision.reason === "unavailable") {
-      await reportSafely(deps.reportFailure, "rate_limiter_unavailable");
+      await reportSafely(
+        deps.reportFailure,
+        providerUnavailable("auth.rate_limit.email", emailDecision.code),
+      );
       return { status: "rate_limiter_unavailable" };
     }
     return { status: "rate_limited" };
@@ -125,7 +162,11 @@ export async function performLogin(
     await authService.recordLogin(admin.id);
   } catch {
     // Best-effort; a failed timestamp write must never block login.
-    await reportSafely(deps.reportFailure, "post_auth_bookkeeping");
+    await reportSafely(deps.reportFailure, {
+      stage: "auth.bookkeeping",
+      code: "AUTH_BOOKKEEPING_DEGRADED",
+      severity: "warning",
+    });
   }
   return { status: "ok", admin };
 }

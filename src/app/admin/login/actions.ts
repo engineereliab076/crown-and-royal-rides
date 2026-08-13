@@ -22,6 +22,18 @@ const AUTHENTICATION_UNAVAILABLE =
   "Unable to sign in right now. Please try again shortly.";
 
 /**
+ * Infrastructure/internal failures show a support reference (the attempt's
+ * server-generated correlation ID) so an operator can find the matching safe
+ * diagnostic event in the logs. No provider name, status, code, or configuration
+ * detail is ever shown — only the opaque reference.
+ */
+function unavailableMessage(correlationId: unknown): string {
+  return typeof correlationId === "string" && correlationId.length > 0
+    ? `Unable to sign in right now. Reference: ${correlationId}`
+    : AUTHENTICATION_UNAVAILABLE;
+}
+
+/**
  * Login server action. Validates input, delegates to Auth.js `signIn`, and maps
  * every credential rejection to a single generic message. A rate-limit lockout
  * (fail-closed) surfaces a distinct, account-neutral message. Passwords are
@@ -61,7 +73,7 @@ export async function loginAction(
       error instanceof AuthenticationUnavailable ||
       error instanceof AuthenticationInternalFailure
     ) {
-      return { error: AUTHENTICATION_UNAVAILABLE };
+      return { error: unavailableMessage(error.correlationId) };
     }
     if (error instanceof AuthError) throw error;
     throw error;

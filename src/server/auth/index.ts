@@ -4,6 +4,8 @@ import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 
 import { createCorrelationId } from "@/lib/correlation";
+import { buildLoginDiagnosticEvent } from "@/server/diagnostics/auth-events";
+import { emitDiagnosticEvent } from "@/server/diagnostics/logger";
 import { getClientIp } from "@/server/http/client-ip";
 import {
   AuthenticationInternalFailure,
@@ -15,14 +17,13 @@ import {
   buildValidatedSession,
 } from "@/server/auth/callbacks";
 import { authEdgeConfig } from "@/server/auth/edge-config";
-import { performLogin } from "@/server/auth/login";
+import { performLogin, type LoginDiagnostic } from "@/server/auth/login";
 import {
   AuthRateLimiterConfigurationError,
   getAuthServices,
 } from "@/server/auth/services";
 import { getIntegrationContainer } from "@/server/integrations/container";
 import { parseLoginCredentials } from "@/server/auth/credentials";
-import type { LoginFailureClassification } from "@/server/auth/login";
 
 /**
  * Full (Node) Auth.js configuration.
@@ -35,24 +36,31 @@ import type { LoginFailureClassification } from "@/server/auth/login";
  * details never surface to the client.
  */
 
-async function reportAuthenticationFailure(
-  correlationId: string,
-  classification: LoginFailureClassification,
-): Promise<void> {
+/**
+ * Resolve the error reporter for the separate (Sentry) diagnostic channel. This
+ * is best-effort: a missing provider must never break authentication.
+ */
+function resolveErrorReporter() {
   try {
-    await getIntegrationContainer().errorReporter.captureMessage(
-      "Authentication failure classified.",
-      classification === "unexpected_internal" ? "error" : "warning",
-      {
-        correlationId,
-        method: "POST",
-        route: "/api/admin/auth/callback/credentials",
-        additional: { classification },
-      },
-    );
+    return getIntegrationContainer().errorReporter;
   } catch {
-    // Reporting and reporter resolution are always best-effort.
+    return undefined;
   }
+}
+
+/**
+ * Emit exactly one safe diagnostic event for a classified login failure. Only
+ * allow-listed, non-sensitive fields are logged; the single event is keyed by
+ * the attempt's correlation ID so an operator can find it from the reference
+ * shown to the user.
+ */
+function reportAuthenticationFailure(
+  correlationId: string,
+  diagnostic: LoginDiagnostic,
+): void {
+  emitDiagnosticEvent(buildLoginDiagnosticEvent(correlationId, diagnostic), {
+    reporter: resolveErrorReporter(),
+  });
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -64,20 +72,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials, request) {
+        // One server-generated correlation ID for the whole attempt. It is never
+        // taken from the browser; it flows to the single diagnostic event and to
+        // the reference shown in the safe UI result.
         const correlationId = createCorrelationId();
-        const reportFailure = (classification: LoginFailureClassification) =>
-          reportAuthenticationFailure(correlationId, classification);
+        const reportFailure = (diagnostic: LoginDiagnostic) =>
+          reportAuthenticationFailure(correlationId, diagnostic);
 
         // Auth.js delivers the whole sign-in body here and always appends a
         // `callbackUrl` control field, so validate only the credential fields
         // rather than passing the whole body to the strict login schema. Passing
         // the whole body rejects every real submission as malformed input and
         // surfaces it as a generic CredentialsSignin before verification runs.
+        // Malformed input is a client-side rejection (stays generic, no event).
         const parsed = parseLoginCredentials(credentials);
-        if (parsed === null) {
-          await reportFailure("invalid_input");
-          return null;
-        }
+        if (parsed === null) return null;
 
         const { email, password } = parsed;
 
@@ -86,19 +95,31 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           authServices = getAuthServices();
         } catch (error) {
           if (error instanceof AuthRateLimiterConfigurationError) {
-            await reportFailure("rate_limiter_unavailable");
-            throw new AuthenticationUnavailable();
+            reportFailure({
+              stage: "auth.services",
+              code: "RATE_LIMIT_CONFIGURATION_MISSING",
+              severity: "error",
+            });
+            throw new AuthenticationUnavailable(correlationId);
           }
-          await reportFailure("unexpected_internal");
-          throw new AuthenticationInternalFailure();
+          reportFailure({
+            stage: "auth.services",
+            code: "AUTH_SERVICES_UNAVAILABLE",
+            severity: "error",
+          });
+          throw new AuthenticationInternalFailure(correlationId);
         }
 
         let ip: string | null;
         try {
           ip = getClientIp(request.headers);
         } catch {
-          await reportFailure("unexpected_internal");
-          throw new AuthenticationInternalFailure();
+          reportFailure({
+            stage: "auth.client_ip",
+            code: "AUTH_CLIENT_IP_INVALID",
+            severity: "error",
+          });
+          throw new AuthenticationInternalFailure(correlationId);
         }
 
         // Ordering and counting live in performLogin: IP consumed before Argon2
@@ -111,8 +132,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             { ...authServices, reportFailure },
           );
         } catch {
-          // performLogin already reported the PII-free internal classification.
-          throw new AuthenticationInternalFailure();
+          // performLogin already emitted the single PII-free diagnostic event.
+          throw new AuthenticationInternalFailure(correlationId);
         }
 
         if (outcome.status === "rate_limited") {
@@ -120,7 +141,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           throw new RateLimitedSignin();
         }
         if (outcome.status === "rate_limiter_unavailable") {
-          throw new AuthenticationUnavailable();
+          // performLogin already emitted the provider diagnostic; surface only
+          // the correlation ID so the safe UI reference matches the log event.
+          throw new AuthenticationUnavailable(correlationId);
         }
         if (outcome.status === "invalid") {
           // Generic failure: never expose AppError details or credentials.

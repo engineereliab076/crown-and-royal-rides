@@ -2,6 +2,10 @@ import "server-only";
 
 import { createHmac } from "node:crypto";
 
+import {
+  rateLimitCodeFrom,
+  type RateLimitProviderCode,
+} from "@/server/integrations/rate-limiter/classify";
 import type { RateLimiter } from "@/server/integrations/rate-limiter/interface";
 import type { RateLimitPolicy } from "@/server/integrations/rate-limiter/types";
 import { normalizeEmail } from "@/server/modules/auth/schemas";
@@ -56,7 +60,12 @@ export type RateLimitDecision =
       readonly reason: "limited";
       readonly retryAfterMs?: number;
     }
-  | { readonly allowed: false; readonly reason: "unavailable" };
+  | {
+      readonly allowed: false;
+      readonly reason: "unavailable";
+      /** Stable provider-failure code for safe diagnostics (never sensitive). */
+      readonly code: RateLimitProviderCode;
+    };
 
 export interface AuthRateLimiterDependencies {
   readonly rateLimiter: RateLimiter;
@@ -111,9 +120,14 @@ export function createAuthRateLimiter(
             reason: "limited",
             retryAfterMs: result.retryAfterMs,
           };
-    } catch {
-      // Fail-closed, but preserve the safe distinction from a real lockout.
-      return { allowed: false, reason: "unavailable" };
+    } catch (error) {
+      // Fail-closed, but preserve the safe distinction from a real lockout and
+      // carry the stable provider code (never the raw error) for diagnostics.
+      return {
+        allowed: false,
+        reason: "unavailable",
+        code: rateLimitCodeFrom(error),
+      };
     }
   }
 

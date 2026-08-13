@@ -126,6 +126,33 @@ describe("loginAction", () => {
     });
   });
 
+  it("shows the correlation-ID reference for an unavailable failure", async () => {
+    const correlationId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    mocks.signIn.mockRejectedValue(
+      new AuthenticationUnavailable(correlationId),
+    );
+
+    await expect(loginAction({}, form())).resolves.toEqual({
+      error: `Unable to sign in right now. Reference: ${correlationId}`,
+    });
+  });
+
+  it("shows the correlation-ID reference for an internal failure", async () => {
+    const correlationId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    const state = await loginAction(
+      {},
+      (() => {
+        mocks.signIn.mockRejectedValue(
+          new AuthenticationInternalFailure(correlationId),
+        );
+        return form();
+      })(),
+    );
+    expect(state.error).toContain(`Reference: ${correlationId}`);
+    // Never leak provider, status, code, or configuration detail.
+    expect(state.error).not.toMatch(/upstash|redis|401|token|config/i);
+  });
+
   it("rethrows a generic non-credential Auth.js error instead of hiding it", async () => {
     // A bare AuthError is neither a credential rejection nor one of our safe
     // classifications, so it must not be masked as invalid credentials.

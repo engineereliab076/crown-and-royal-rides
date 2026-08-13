@@ -24,6 +24,7 @@
     "db:migrate:status": "prisma migrate status",
     "db:migrate:diff": "prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --script",
     "db:migrate:verify": "node scripts/verify-migration-drift.mjs",
+    "diagnose:rate-limit": "tsx --conditions react-server scripts/diagnose-rate-limit.ts",
     "db:seed": "prisma db seed",
     "db:studio": "prisma studio",
     "postinstall": "prisma generate"

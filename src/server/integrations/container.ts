@@ -79,43 +79,40 @@ function groupIsComplete(group: ProviderGroup): boolean {
   return true;
 }
 
-function requireDeployedGroups(
+function missingConfigError(
   mode: IntegrationDeploymentMode,
-  groups: readonly ProviderGroup[],
-): void {
-  if (mode !== "preview" && mode !== "production") return;
-  const missing = groups
-    .filter((group) => !groupIsComplete(group))
-    .flatMap((group) => group.values.map(({ key }) => key));
-  if (missing.length > 0) {
-    throw new Error(
-      `Real integrations are required in ${mode}. Missing: ${missing.join(", ")}.`,
-    );
-  }
+  group: ProviderGroup,
+): Error {
+  const missing = group.values
+    .filter(({ value }) => value === undefined)
+    .map(({ key }) => key);
+  return new Error(
+    `Real integrations are required in ${mode}. Missing: ${missing.join(", ")}.`,
+  );
 }
 
+/**
+ * Compose the integration container.
+ *
+ * Each of the four integrations is resolved **independently and lazily**:
+ * accessing (say) `errorReporter` initializes only the Sentry adapter and never
+ * touches Cloudinary, Resend, or Upstash. Provider SDK clients are therefore
+ * constructed on first request, not at import time, so importing an admin route
+ * and collecting page data during `next build` never requires unrelated
+ * provider credentials.
+ *
+ * Production safety is preserved per integration: requesting a specific real
+ * integration whose configuration is absent in Preview/Production throws a safe,
+ * value-free error (never a silent in-memory fallback). In local development an
+ * absent group falls back to its in-memory double; a *partially* configured
+ * group is a configuration error and is rejected eagerly (below).
+ */
 export function createIntegrationContainer(
   environment: Environment,
   dependencies: IntegrationContainerDependencies = {},
 ): IntegrationContainer {
   const mode = deploymentMode(environment);
-  if (mode === "test") {
-    return Object.freeze({
-      mediaStorage: new InMemoryMediaStorage(),
-      emailSender: new InMemoryEmailSender(),
-      rateLimiter: new InMemoryRateLimiter(),
-      errorReporter: new InMemoryErrorReporter(),
-      mode: Object.freeze({
-        deployment: mode,
-        providers: Object.freeze({
-          mediaStorage: "in-memory",
-          emailSender: "in-memory",
-          rateLimiter: "in-memory",
-          errorReporter: "in-memory",
-        }),
-      }),
-    });
-  }
+  const isDeployed = mode === "preview" || mode === "production";
 
   const cloudinaryGroup: ProviderGroup = {
     name: "Cloudinary",
@@ -171,16 +168,26 @@ export function createIntegrationContainer(
       { key: "SENTRY_ENVIRONMENT", value: environment.SENTRY_ENVIRONMENT },
     ],
   };
-  const groups = [cloudinaryGroup, resendGroup, upstashGroup, sentryGroup];
-  requireDeployedGroups(mode, groups);
 
-  const hasCloudinary = groupIsComplete(cloudinaryGroup);
-  const hasResend = groupIsComplete(resendGroup);
-  const hasUpstash = groupIsComplete(upstashGroup);
-  const hasSentry = groupIsComplete(sentryGroup);
+  // Completeness is computed once for the (cheap, adapter-free) mode descriptor.
+  // Test mode always uses in-memory doubles. `groupIsComplete` returns false for
+  // a wholly-absent group but throws for a *partial* group — a configuration
+  // error surfaced eagerly regardless of which integration is requested later.
+  const hasCloudinary = mode !== "test" && groupIsComplete(cloudinaryGroup);
+  const hasResend = mode !== "test" && groupIsComplete(resendGroup);
+  const hasUpstash = mode !== "test" && groupIsComplete(upstashGroup);
+  const hasSentry = mode !== "test" && groupIsComplete(sentryGroup);
 
-  const mediaStorage = hasCloudinary
-    ? new CloudinaryMediaStorage(
+  // Memoized lazy resolvers. Each touches only its own provider group, so
+  // requesting one integration never initializes another.
+  let mediaStorage: MediaStorage | undefined;
+  let emailSender: EmailSender | undefined;
+  let rateLimiter: RateLimiter | undefined;
+  let errorReporter: ErrorReporter | undefined;
+
+  function resolveMediaStorage(): MediaStorage {
+    if (hasCloudinary) {
+      return new CloudinaryMediaStorage(
         {
           cloudName: environment.CLOUDINARY_CLOUD_NAME as string,
           apiKey: environment.CLOUDINARY_API_KEY as string,
@@ -188,29 +195,44 @@ export function createIntegrationContainer(
           folderPrefix: environment.CLOUDINARY_FOLDER_PREFIX as string,
         },
         { client: dependencies.cloudinary },
-      )
-    : new InMemoryMediaStorage();
-  const emailSender = hasResend
-    ? new ResendEmailSender(
+      );
+    }
+    if (isDeployed) throw missingConfigError(mode, cloudinaryGroup);
+    return new InMemoryMediaStorage();
+  }
+
+  function resolveEmailSender(): EmailSender {
+    if (hasResend) {
+      return new ResendEmailSender(
         {
           apiKey: environment.RESEND_API_KEY as string,
           from: environment.EMAIL_FROM as string,
         },
         dependencies.resend,
-      )
-    : new InMemoryEmailSender();
-  const rateLimiter = hasUpstash
-    ? new UpstashRateLimiter(
+      );
+    }
+    if (isDeployed) throw missingConfigError(mode, resendGroup);
+    return new InMemoryEmailSender();
+  }
+
+  function resolveRateLimiter(): RateLimiter {
+    if (hasUpstash) {
+      return new UpstashRateLimiter(
         {
           restUrl: environment.UPSTASH_REDIS_REST_URL as string,
           restToken: environment.UPSTASH_REDIS_REST_TOKEN as string,
           namespace: environment.RATE_LIMIT_NAMESPACE as string,
         },
         dependencies.upstashLimiterFactory,
-      )
-    : new InMemoryRateLimiter();
-  const errorReporter = hasSentry
-    ? new SentryErrorReporter(
+      );
+    }
+    if (isDeployed) throw missingConfigError(mode, upstashGroup);
+    return new InMemoryRateLimiter();
+  }
+
+  function resolveErrorReporter(): ErrorReporter {
+    if (hasSentry) {
+      return new SentryErrorReporter(
         {
           dsn: environment.SENTRY_DSN as string,
           environment: environment.SENTRY_ENVIRONMENT as string,
@@ -218,14 +240,25 @@ export function createIntegrationContainer(
           includeActorId: false,
         },
         dependencies.sentry,
-      )
-    : new InMemoryErrorReporter();
+      );
+    }
+    if (isDeployed) throw missingConfigError(mode, sentryGroup);
+    return new InMemoryErrorReporter();
+  }
 
-  return Object.freeze({
-    mediaStorage,
-    emailSender,
-    rateLimiter,
-    errorReporter,
+  return Object.freeze<IntegrationContainer>({
+    get mediaStorage() {
+      return (mediaStorage ??= resolveMediaStorage());
+    },
+    get emailSender() {
+      return (emailSender ??= resolveEmailSender());
+    },
+    get rateLimiter() {
+      return (rateLimiter ??= resolveRateLimiter());
+    },
+    get errorReporter() {
+      return (errorReporter ??= resolveErrorReporter());
+    },
     mode: Object.freeze({
       deployment: mode,
       providers: Object.freeze({

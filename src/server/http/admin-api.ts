@@ -12,7 +12,9 @@ export function adminRouteOptions() {
       mode: "required" as const,
       allowedOrigin: env.APP_ORIGIN ?? "http://localhost:3000",
     },
-    errorReporter: getIntegrationContainer().errorReporter,
+    // Resolved lazily (only on an unexpected error), so importing an admin route
+    // and collecting page data never initializes any integration provider.
+    errorReporter: () => getIntegrationContainer().errorReporter,
   };
 }
 

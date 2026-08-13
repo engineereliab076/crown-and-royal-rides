@@ -28,7 +28,13 @@ export type OriginPolicy =
 
 export interface RouteHandlerOptions {
   origin: OriginPolicy;
-  errorReporter?: ErrorReporter;
+  /**
+   * The error reporter, or a thunk resolving it. A thunk is resolved lazily on
+   * the first unexpected error (never at route-module import), so wrapping a
+   * handler pulls in no integration provider. If resolution throws, reporting
+   * safely falls back to the no-op reporter.
+   */
+  errorReporter?: ErrorReporter | (() => ErrorReporter);
 }
 
 interface NormalizedRequiredOriginPolicy {
@@ -184,6 +190,20 @@ function getRoute(request: Request): string {
   }
 }
 
+function resolveErrorReporter(
+  option: ErrorReporter | (() => ErrorReporter) | undefined,
+): ErrorReporter {
+  if (option === undefined) return noopErrorReporter;
+  try {
+    const resolved = typeof option === "function" ? option() : option;
+    return resolved ?? noopErrorReporter;
+  } catch {
+    // Resolving a reporter (e.g. a missing provider in a deployed environment)
+    // must never break the error response; fall back to the no-op reporter.
+    return noopErrorReporter;
+  }
+}
+
 async function reportUnexpectedError(
   reporter: ErrorReporter,
   error: unknown,
@@ -207,7 +227,6 @@ export function withRouteHandler<TContext>(
   options: RouteHandlerOptions,
 ): WrappedRouteHandler<TContext> {
   const originPolicy = normalizeOriginPolicy(options.origin);
-  const errorReporter = options.errorReporter ?? noopErrorReporter;
 
   return async (request: Request, context: TContext): Promise<Response> => {
     const correlationId = createCorrelationId();
@@ -236,7 +255,7 @@ export function withRouteHandler<TContext>(
       }
 
       await reportUnexpectedError(
-        errorReporter,
+        resolveErrorReporter(options.errorReporter),
         error,
         correlationId,
         method,

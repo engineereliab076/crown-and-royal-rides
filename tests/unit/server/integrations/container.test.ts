@@ -143,7 +143,7 @@ describe("integration composition root", () => {
   });
 
   it.each(["preview", "production"] as const)(
-    "fails safely when %s is missing provider groups",
+    "constructs without throwing, then fails safely per requested provider in %s",
     (vercelEnvironment) => {
       const environment = parseEnv({
         NODE_ENV: "production",
@@ -151,9 +151,14 @@ describe("integration composition root", () => {
         NEXT_PUBLIC_APP_URL: "https://app.example.test",
         APP_ORIGIN: "https://app.example.test",
       });
-      expect(() => createIntegrationContainer(environment)).toThrow(
-        /CLOUDINARY_CLOUD_NAME/,
-      );
+      // Construction (what importing a route module does) no longer throws...
+      const container = createIntegrationContainer(environment);
+      // ...but requesting each unconfigured integration fails safely, and never
+      // silently substitutes an in-memory adapter in a deployed environment.
+      expect(() => container.mediaStorage).toThrow(/CLOUDINARY_CLOUD_NAME/);
+      expect(() => container.emailSender).toThrow(/RESEND_API_KEY/);
+      expect(() => container.rateLimiter).toThrow(/UPSTASH_REDIS_REST_URL/);
+      expect(() => container.errorReporter).toThrow(/SENTRY_DSN/);
     },
   );
 
@@ -199,5 +204,93 @@ describe("integration composition root", () => {
     expect(getIntegrationContainer()).toBe(first);
     resetIntegrationContainerForTests();
     expect(getIntegrationContainer()).not.toBe(first);
+  });
+});
+
+// The production deployment carries database + auth vars and Upstash + Sentry,
+// but not Cloudinary or Resend (media/email features do not exist yet). These
+// tests pin the lazy, independent resolution that lets an admin route import and
+// collect page data during `next build` without those unrelated credentials.
+describe("integration composition root — lazy independent resolution", () => {
+  const DEPLOYED_BASE = {
+    NODE_ENV: "production" as const,
+    VERCEL_ENV: "production" as const,
+    NEXT_PUBLIC_APP_URL: "https://app.example.test",
+    APP_ORIGIN: "https://app.example.test",
+  };
+  const UPSTASH = {
+    UPSTASH_REDIS_REST_URL: "https://redis.example.test",
+    UPSTASH_REDIS_REST_TOKEN: "fake-upstash-token",
+    RATE_LIMIT_NAMESPACE: "prod:",
+  };
+  const SENTRY = {
+    SENTRY_DSN: "https://public-key@sentry.example.test/1",
+    NEXT_PUBLIC_SENTRY_DSN: "https://public-key@sentry.example.test/1",
+    SENTRY_ENVIRONMENT: "production" as const,
+  };
+
+  it("resolves the error reporter without initializing Cloudinary, Resend, or Upstash", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ ...DEPLOYED_BASE, ...SENTRY }),
+      fakeDependencies(),
+    );
+
+    expect(container.errorReporter).toBeInstanceOf(SentryErrorReporter);
+    // The other providers were never touched — requesting them still fails
+    // (they are unconfigured), proving the error reporter did not initialize them.
+    expect(() => container.mediaStorage).toThrow(/CLOUDINARY_CLOUD_NAME/);
+    expect(() => container.emailSender).toThrow(/RESEND_API_KEY/);
+    expect(() => container.rateLimiter).toThrow(/UPSTASH_REDIS_REST_URL/);
+  });
+
+  it("resolves the rate limiter without initializing Cloudinary or Resend", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ ...DEPLOYED_BASE, ...UPSTASH }),
+      fakeDependencies(),
+    );
+
+    expect(container.rateLimiter).toBeInstanceOf(UpstashRateLimiter);
+    expect(() => container.mediaStorage).toThrow(/CLOUDINARY_CLOUD_NAME/);
+    expect(() => container.emailSender).toThrow(/RESEND_API_KEY/);
+  });
+
+  it("supports admin/audit/settings construction (rate limiter + error reporter) without Cloudinary or Resend", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ ...DEPLOYED_BASE, ...UPSTASH, ...SENTRY }),
+      fakeDependencies(),
+    );
+
+    // What the admin/auth composition roots actually read:
+    expect(container.mode.providers.rateLimiter).toBe("upstash");
+    expect(container.rateLimiter).toBeInstanceOf(UpstashRateLimiter);
+    expect(container.errorReporter).toBeInstanceOf(SentryErrorReporter);
+    // Media/email stay uninitialized and unconfigured.
+    expect(() => container.mediaStorage).toThrow(/CLOUDINARY_CLOUD_NAME/);
+    expect(() => container.emailSender).toThrow(/RESEND_API_KEY/);
+  });
+
+  it("never falls back to an in-memory adapter for a missing provider in production", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ ...DEPLOYED_BASE, ...UPSTASH, ...SENTRY }),
+      fakeDependencies(),
+    );
+    // A deployed environment must fail rather than silently degrade.
+    expect(() => container.mediaStorage).toThrow(
+      /Real integrations are required in production/,
+    );
+    expect(() => container.emailSender).toThrow(
+      /Real integrations are required in production/,
+    );
+  });
+
+  it("memoizes each lazily created provider (singleton per container)", () => {
+    const container = createIntegrationContainer(
+      parseEnv({ NODE_ENV: "development", ...providerGroups("dev") }),
+      fakeDependencies(),
+    );
+    expect(container.mediaStorage).toBe(container.mediaStorage);
+    expect(container.emailSender).toBe(container.emailSender);
+    expect(container.rateLimiter).toBe(container.rateLimiter);
+    expect(container.errorReporter).toBe(container.errorReporter);
   });
 });

@@ -1,7 +1,7 @@
 "use server";
 
 import { AuthError, CredentialsSignin } from "next-auth";
-import { redirect } from "next/navigation";
+import { unstable_rethrow } from "next/navigation";
 
 import { resolveSafeAdminPath } from "@/lib/safe-redirect";
 import { signIn } from "@/server/auth";
@@ -35,14 +35,18 @@ export async function loginAction(
   });
   if (!parsed.success) return { error: GENERIC_FAILURE };
 
-  let result: unknown;
   try {
-    result = await signIn("credentials", {
+    await signIn("credentials", {
       email: parsed.data.email,
       password: parsed.data.password,
-      redirect: false,
+      redirectTo: callbackUrl,
     });
   } catch (error) {
+    // Auth.js completes a successful server-action sign-in by throwing Next's
+    // redirect signal. Preserve framework control flow before translating
+    // genuine authentication failures into safe form state.
+    unstable_rethrow(error);
+
     if (error instanceof CredentialsSignin && error.code === "rate_limited") {
       return { error: RATE_LIMITED };
     }
@@ -50,12 +54,5 @@ export async function loginAction(
     throw error;
   }
 
-  // With `redirect: false`, a failed authorize returns the login URL carrying an
-  // error (and code) query parameter rather than throwing.
-  if (typeof result === "string") {
-    if (result.includes("code=rate_limited")) return { error: RATE_LIMITED };
-    if (result.includes("error=")) return { error: GENERIC_FAILURE };
-  }
-
-  redirect(callbackUrl);
+  throw new Error("Auth.js sign-in completed without redirecting.");
 }

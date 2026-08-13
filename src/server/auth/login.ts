@@ -32,7 +32,10 @@ export type LoginOutcome =
   | { readonly status: "rate_limiter_unavailable" };
 
 export type LoginFailureClassification =
-  "rate_limiter_unavailable" | "unexpected_internal" | "post_auth_bookkeeping";
+  | "invalid_input"
+  | "rate_limiter_unavailable"
+  | "unexpected_internal"
+  | "post_auth_bookkeeping";
 
 export type LoginFailureReporter = (
   classification: LoginFailureClassification,

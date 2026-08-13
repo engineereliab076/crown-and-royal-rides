@@ -21,8 +21,8 @@ import {
   getAuthServices,
 } from "@/server/auth/services";
 import { getIntegrationContainer } from "@/server/integrations/container";
+import { parseLoginCredentials } from "@/server/auth/credentials";
 import type { LoginFailureClassification } from "@/server/auth/login";
-import { loginCredentialsSchema } from "@/server/modules/auth/schemas";
 
 /**
  * Full (Node) Auth.js configuration.
@@ -64,13 +64,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials, request) {
-        const parsed = loginCredentialsSchema.safeParse(credentials);
-        if (!parsed.success) return null;
-
-        const { email, password } = parsed.data;
         const correlationId = createCorrelationId();
         const reportFailure = (classification: LoginFailureClassification) =>
           reportAuthenticationFailure(correlationId, classification);
+
+        // Auth.js delivers the whole sign-in body here and always appends a
+        // `callbackUrl` control field, so validate only the credential fields
+        // rather than passing the whole body to the strict login schema. Passing
+        // the whole body rejects every real submission as malformed input and
+        // surfaces it as a generic CredentialsSignin before verification runs.
+        const parsed = parseLoginCredentials(credentials);
+        if (parsed === null) {
+          await reportFailure("invalid_input");
+          return null;
+        }
+
+        const { email, password } = parsed;
 
         let authServices;
         try {

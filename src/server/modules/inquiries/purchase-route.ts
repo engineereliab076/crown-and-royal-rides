@@ -3,7 +3,7 @@ import "server-only";
 import { buildPurchaseWhatsAppMessage, buildWhatsAppUrl } from "@/lib/whatsapp";
 import { parseApiInput, readJsonBody } from "@/server/http/admin-api";
 import { getClientIp } from "@/server/http/client-ip";
-import { withRouteHandler } from "@/server/http/handler";
+import { resolveErrorReporter, withRouteHandler } from "@/server/http/handler";
 import type { EmailSender } from "@/server/integrations/email-sender/interface";
 import type { ErrorReporter } from "@/server/integrations/error-reporter/interface";
 import type { RateLimiter } from "@/server/integrations/rate-limiter/interface";
@@ -21,7 +21,15 @@ export interface PurchaseRouteDependencies {
   readonly settingsRepository: SettingsRepository;
   readonly rateLimiter: RateLimiter;
   readonly emailSender: EmailSender;
-  readonly errorReporter: ErrorReporter;
+  /**
+   * A thunk resolving the error reporter. It is invoked request-time only —
+   * never at route-module import or build-time page collection — so importing
+   * this route constructs no Sentry adapter and requires no Sentry variables.
+   * Resolution is funnelled through `resolveErrorReporter`, so a thunk that
+   * throws (e.g. Sentry absent in a deployed environment) safely degrades to the
+   * no-op reporter.
+   */
+  readonly errorReporter: () => ErrorReporter;
   readonly hashSecret: string;
   readonly publicOrigin: string;
   readonly allowedOrigin: string;
@@ -68,9 +76,13 @@ export function createPurchaseInquiryPost(
         "Invalid purchase request.",
       );
       const clientIp = getClientIp(request.headers);
+      // Resolve the reporter once, request-time and safely: the thunk is never
+      // invoked at import, and a resolution failure degrades to the no-op
+      // reporter so no request-time reporting path can throw.
+      const errorReporter = resolveErrorReporter(dependencies.errorReporter);
       await enforcePurchaseInquiryRateLimit({
         rateLimiter: dependencies.rateLimiter,
-        errorReporter: dependencies.errorReporter,
+        errorReporter,
         hashSecret: dependencies.hashSecret,
         correlationId: execution.correlationId,
         clientIp,
@@ -110,7 +122,7 @@ export function createPurchaseInquiryPost(
         }
       } catch {
         await reportSettingsFailure(
-          dependencies.errorReporter,
+          errorReporter,
           execution.correlationId,
           submission.reference,
         );
@@ -128,7 +140,7 @@ export function createPurchaseInquiryPost(
       schedulePurchaseInquiryNotification({
         scheduleAfter: dependencies.scheduleAfter,
         emailSender: dependencies.emailSender,
-        errorReporter: dependencies.errorReporter,
+        errorReporter,
         recipients,
         submission,
         correlationId: execution.correlationId,
@@ -137,6 +149,8 @@ export function createPurchaseInquiryPost(
     },
     {
       origin: { mode: "required", allowedOrigin: dependencies.allowedOrigin },
+      // Pass the thunk (not the resolved reporter): the handler resolves it
+      // lazily and safely only on an unexpected error, never at import.
       errorReporter: dependencies.errorReporter,
     },
   );

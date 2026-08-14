@@ -16,9 +16,10 @@ export const POST = createPurchaseInquiryPost({
   get emailSender() {
     return getInquiryRuntimeServices().integrations.emailSender;
   },
-  get errorReporter() {
-    return getInquiryRuntimeServices().integrations.errorReporter;
-  },
+  // A thunk, resolved request-time on demand: referencing it here (and while
+  // collecting page data during `next build`) constructs no Sentry adapter and
+  // requires no Sentry variables.
+  errorReporter: () => getInquiryRuntimeServices().integrations.errorReporter,
   get hashSecret() {
     return getInquiryRuntimeServices().hashSecret;
   },

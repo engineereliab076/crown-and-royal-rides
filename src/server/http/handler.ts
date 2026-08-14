@@ -190,7 +190,17 @@ function getRoute(request: Request): string {
   }
 }
 
-function resolveErrorReporter(
+/**
+ * Resolve an error reporter, or a thunk resolving one, to a concrete reporter.
+ *
+ * Resolution is deferred to the caller's request-time invocation — never a
+ * route-module import — so wrapping a handler pulls in no integration provider.
+ * If the thunk throws (e.g. a real provider whose configuration is absent in a
+ * deployed environment), reporting safely falls back to the no-op reporter
+ * rather than breaking the response. Exported for reuse by request handlers that
+ * report from post-response paths (e.g. `after()` notifications).
+ */
+export function resolveErrorReporter(
   option: ErrorReporter | (() => ErrorReporter) | undefined,
 ): ErrorReporter {
   if (option === undefined) return noopErrorReporter;

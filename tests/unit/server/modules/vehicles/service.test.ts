@@ -272,6 +272,7 @@ describe("vehicle service", () => {
     const candidate = record({
       images: [
         {
+          id: "img-cover",
           secureUrl: "https://example.test/cover.jpg",
           width: 1600,
           height: 900,
@@ -301,6 +302,7 @@ describe("vehicle service", () => {
     const candidate = record({
       images: [
         {
+          id: "img-cover",
           secureUrl: "https://example.test/cover.jpg",
           width: 1600,
           height: 900,
@@ -353,6 +355,7 @@ describe("vehicle service", () => {
     const candidate = record({
       images: [
         {
+          id: "img-cover",
           secureUrl: "https://example.test/cover.jpg",
           width: 1600,
           height: 900,

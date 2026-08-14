@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import { notFound } from "next/navigation";
 
 import { Container } from "@/components/layout/container";
 import { ContactActions } from "@/components/contact-actions";
+import { VehicleGallery } from "@/components/vehicle-gallery";
 import { env } from "@/lib/env";
 import {
   buildDirectVehicleWhatsAppMessage,
@@ -100,23 +100,7 @@ export default async function VehiclePublicPage({
             {presentation.price}
           </p>
         </div>
-        {vehicle.coverImage ? (
-          <figure className="overflow-hidden rounded-2xl border bg-surface-raised shadow-soft">
-            <Image
-              src={vehicle.coverImage.url}
-              alt={presentation.coverAlt}
-              width={vehicle.coverImage.width}
-              height={vehicle.coverImage.height}
-              sizes="(min-width: 1280px) 1152px, (min-width: 640px) calc(100vw - 3rem), calc(100vw - 2rem)"
-              unoptimized
-              className="aspect-video w-full object-cover"
-            />
-          </figure>
-        ) : (
-          <div className="flex aspect-video items-center justify-center rounded-2xl border bg-surface-subtle text-sm text-muted-foreground">
-            Image unavailable
-          </div>
-        )}
+        <VehicleGallery images={vehicle.images} title={presentation.title} />
         <div className="grid gap-8 lg:grid-cols-[20rem_1fr]">
           <dl className="grid grid-cols-2 gap-5 rounded-2xl border bg-card p-5 shadow-soft lg:grid-cols-1">
             {details.map(([label, value]) => (

@@ -8,8 +8,7 @@ const mocks = vi.hoisted(() => ({
   listAdmin: vi.fn(),
   getAdminById: vi.fn(),
   publish: vi.fn(),
-  createCoverUploadAuthorization: vi.fn(),
-  attachCover: vi.fn(),
+  createUploadAuthorization: vi.fn(),
 }));
 
 vi.mock("@/server/http/auth-guard", () => ({
@@ -23,15 +22,15 @@ vi.mock("@/server/admin/services", () => ({
       getAdminById: mocks.getAdminById,
       publish: mocks.publish,
     },
-    vehicleMediaService: {
-      createCoverUploadAuthorization: mocks.createCoverUploadAuthorization,
-      attachCover: mocks.attachCover,
-    },
+  }),
+}));
+vi.mock("@/server/vehicle-images/services", () => ({
+  getVehicleImageService: () => ({
+    createUploadAuthorization: mocks.createUploadAuthorization,
   }),
 }));
 
 import { GET as getVehicle } from "@/app/api/admin/vehicles/[id]/route";
-import { POST as attachCover } from "@/app/api/admin/vehicles/[id]/cover/route";
 import { POST as publishVehicle } from "@/app/api/admin/vehicles/[id]/publish/route";
 import { POST as createMediaSignature } from "@/app/api/admin/media/signature/route";
 import {
@@ -83,7 +82,7 @@ beforeEach(() => {
   });
   mocks.getAdminById.mockResolvedValue(DTO);
   mocks.publish.mockResolvedValue(DTO);
-  mocks.createCoverUploadAuthorization.mockResolvedValue({
+  mocks.createUploadAuthorization.mockResolvedValue({
     uploadUrl: "https://uploads.test.invalid/direct",
     apiKey: "public-key",
     publicId: `dev/vehicles/vehicle/${VEHICLE_ID}/asset-id`,
@@ -99,7 +98,6 @@ beforeEach(() => {
     expiresAt: 1300,
     signature: "safe-signature",
   });
-  mocks.attachCover.mockResolvedValue(DTO);
 });
 
 describe("vehicle admin routes", () => {
@@ -228,7 +226,7 @@ describe("vehicle admin routes", () => {
       noContext,
     );
     expect(response.status).toBe(status);
-    expect(mocks.createCoverUploadAuthorization).not.toHaveBeenCalled();
+    expect(mocks.createUploadAuthorization).not.toHaveBeenCalled();
   });
 
   it("returns a safe, private upload authorization and never a secret", async () => {
@@ -275,49 +273,5 @@ describe("vehicle admin routes", () => {
       noContext,
     );
     expect(wrongOrigin.status).toBe(403);
-  });
-
-  it("validates and attaches only minimal completion metadata", async () => {
-    const completed = {
-      publicId: `dev/vehicles/vehicle/${VEHICLE_ID}/asset-id`,
-      version: 123,
-      signature: "response-signature",
-    };
-    const response = await attachCover(
-      request(`/api/admin/vehicles/${VEHICLE_ID}/cover`, {
-        method: "POST",
-        headers: {
-          Origin: "http://localhost:3000",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(completed),
-      }),
-      context,
-    );
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(mocks.attachCover.mock.calls[0]?.slice(0, 3)).toEqual([
-      { id: ACTOR_ID, role: "owner" },
-      VEHICLE_ID,
-      completed,
-    ]);
-
-    const altered = await attachCover(
-      request(`/api/admin/vehicles/${VEHICLE_ID}/cover`, {
-        method: "POST",
-        headers: {
-          Origin: "http://localhost:3000",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...completed,
-          secureUrl: "https://attacker.example/fake.jpg",
-          width: 1,
-        }),
-      }),
-      context,
-    );
-    expect(altered.status).toBe(422);
-    expect(mocks.attachCover).toHaveBeenCalledTimes(1);
   });
 });

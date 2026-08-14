@@ -503,22 +503,86 @@ non-images, unsupported formats, non-positive or greater-than-6000 dimensions,
 and files over 10 MB. No raw provider response or credential crosses the media
 abstraction.
 
-Group 3 attaches exactly one image as `sort_order = 0` and `is_cover = true`;
-the partial database uniqueness constraint remains the race-condition defense.
-There is no gallery, reorder, replace, or delete UI. If verification succeeds
-but attachment fails, cleanup first proves no image row references the public ID
-and then attempts provider deletion. Cleanup is best effort; an inconclusive
-database check never authorizes deletion, and cleanup failure is reported with
-safe operation-only context without replacing the original application error.
+**Phase 4 — vehicle image gallery.**
 
-Successful first publication commits `published`/`publishedAt` before invalidating
-the stable `vehicle:<slug>` cache tag. Failed and idempotent-repeat publication
-do not invalidate. Cache failure cannot roll back a committed publication and is
-reported safely. `/cars/[slug]` is a Server Component backed by the public DTO,
-an ISR window, and the same tag; drafts and missing slugs render Next.js 404.
+There is a single canonical vehicle-image service
+(`src/server/modules/vehicle-images`). It owns every gallery operation —
+`getGallery`, signed-upload authorization, `attach`, `reorder`, `setCover`,
+`updateAltText`, and `remove` — and the Phase 3 "first image becomes the cover"
+behavior is now just the empty-gallery case of `attach`. The old single-cover
+route/service/uploader were removed; the `/api/admin/media/signature` flow
+continues to work and now issues authorization through this service.
 
-Inquiry submission, WhatsApp actions, email notifications, and the rest of
-Group 4 remain deliberately unimplemented.
+_Gallery rules._ A vehicle holds at most **15 images**, enforced inside the same
+transaction as attachment (the parent row is locked, so a concurrent pair at the
+limit can never leave 16). Accepted upload formats are **JPEG/JPG, PNG, WebP**.
+Images are compressed **in the browser** before any upload: the longest edge is
+reduced to ≤ **2400 px**, EXIF metadata is stripped (never preserved), the output
+stays an allowed format below the server's verified **10 MB** limit, and a
+compression failure fails only that one file — an uncompressed fallback is never
+uploaded silently. Ordering is a contiguous `sort_order` starting at 0; a reorder
+persists the whole set in one batch `PATCH` using the deferrable
+`(vehicle_id, sort_order)` unique constraint. Exactly one cover exists, guarded by
+the partial unique index; removing the cover promotes the remaining image with the
+smallest `sort_order`, and removing the last image leaves no cover. Every image
+requires non-empty alt text (≤ 160 chars).
+
+_Optimistic concurrency._ `reorder` and `setCover` require the client's
+`expectedUpdatedAt`; the service locks the vehicle, compares it to the stored
+`updated_at`, and rejects a mismatch with `409 STALE_RECORD`. The admin UI
+reorders optimistically and restores the server order on failure; on a stale
+conflict it reloads the gallery and shows a clear message.
+
+_Provider credentials never reach the browser._ The browser only ever receives a
+short-lived signed upload authorization (no API secret) and delivered HTTPS URLs;
+authorization is never written to `localStorage`, `sessionStorage`, cookies, query
+strings, or logs. Public delivery uses a client-safe Cloudinary loader that only
+rewrites the exact verified `res.cloudinary.com/.../image/upload/` structure
+(`f_auto,q_auto,c_limit,w_<clamped>`), clamping widths to the ladder
+`320,480,640,768,960,1200,1600,2000,2400`; any other URL is returned unchanged, so
+no arbitrary remote host is opened.
+
+_Deletion outbox + retry endpoint._ A removal deletes the database row and, in the
+**same transaction**, records the provider-deletion intent in
+`media_deletion_queue` (an outbox). Provider deletion is attempted only after the
+commit: on success the queue row is resolved (deleted); on failure/timeout the row
+remains for retry and only a constant `deletion_retry_failed` marker is stored —
+never a public ID, provider response, or URL. A crash cannot lose the obligation.
+The retry worker (`POST /api/cron/media-deletions`) drains a bounded batch (≤ 25,
+oldest `created_at` then id), treats provider not-found as success, increments
+`attempts`/sets `last_attempted_at` on failure, and permanently retains (never
+discards) entries past 10 attempts for human inspection. It returns only safe
+counts `{ selected, deleted, retained, failed }`. Provider deletion is idempotent;
+because the frozen queue schema has no claim column, two overlapping jobs may both
+attempt the same entry (a harmless duplicate attempt).
+
+_Invoking the retry endpoint safely._ Authenticate with a bearer token only — no
+admin cookie and no browser-origin check. Never print `CRON_SECRET`; read it from
+the environment:
+
+```
+curl -fsS -X POST "$APP_ORIGIN/api/cron/media-deletions" \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+A missing/incorrect token returns `401`. No Vercel schedule is added in this
+phase; the authenticated endpoint plus manual invocation are sufficient. To
+monitor the queue, inspect `media_deletion_queue`: a persistently non-empty table
+or rows with `attempts` near 10 indicate a provider problem — a stuck row's
+`public_id`/`last_error` are safe operational values for an operator (a generic
+marker, not a provider secret).
+
+_Publication and cache._ Successful first publication commits
+`published`/`publishedAt` before invalidating the stable `vehicle:<slug>` cache
+tag. Gallery mutations to an **already-published** vehicle revalidate the same tag
+**after** the database commit; draft mutations do not revalidate. Cache failure
+never rolls back the committed mutation and is reported safely (no public ID/URL).
+`/cars/[slug]` is a Server Component backed by the public DTO, an ISR window, and
+the same tag; it renders an accessible gallery with a keyboard/swipe lightbox.
+Drafts and missing slugs render Next.js 404.
+
+_No migration was added in Phase 4._ The gallery, ordering, single-cover, and
+deletion-outbox behaviors all use the existing `0002`/`0003` schema unchanged.
 
 **Working with migrations during development.**
 

@@ -54,33 +54,34 @@ describe("vehicle admin components", () => {
     );
   });
 
-  it("uses the single-file cover flow without browser persistence or provider SDKs", () => {
+  it("uses the multi-file gallery flow without browser persistence or provider SDKs", () => {
     const source = readFileSync(
-      "src/components/admin/vehicle-cover-uploader.tsx",
+      "src/components/admin/vehicle-gallery-manager.tsx",
       "utf8",
     );
-    expect(source).toContain("accept={VEHICLE_COVER_ACCEPT}");
+    // Compression happens before any authorization/upload.
+    expect(source).toContain("compressVehicleImage");
     expect(source).toContain("/api/admin/media/signature");
-    expect(source).toContain("authorization.uploadUrl");
-    expect(source).toContain(`/cover`);
-    expect(source).toContain("if (file === null || busy) return");
-    expect(source).toContain("clearFile()");
+    expect(source).toContain("uploadToProvider");
+    // A single batch reorder PATCH, not one request per image.
+    expect(source).toContain("/images/reorder");
+    // Object URLs are revoked (no leaks).
+    expect(source).toContain("URL.revokeObjectURL");
+    // No browser persistence of authorization, no logging, no provider SDK.
     expect(source).not.toMatch(
       /localStorage|sessionStorage|document\.cookie|console\./,
     );
     expect(source).not.toMatch(/from ["']cloudinary/);
   });
 
-  it("hides the uploader once an admin cover exists", () => {
+  it("renders the gallery manager on the vehicle detail page", () => {
     const source = readFileSync(
       "src/app/admin/(protected)/vehicles/[id]/page.tsx",
       "utf8",
     );
-    expect(source).toMatch(
-      /vehicle\.coverImage[\s\S]*<Image[\s\S]*:[\s\S]*<VehicleCoverUploader/,
-    );
-    expect(source).toContain("width={vehicle.coverImage.width}");
-    expect(source).toContain("height={vehicle.coverImage.height}");
-    expect(source).toContain("unoptimized");
+    expect(source).toContain("<VehicleGalleryManager");
+    expect(source).toContain("initialGallery={gallery}");
+    // The single-cover `unoptimized` <Image> is gone from this page.
+    expect(source).not.toContain("unoptimized");
   });
 });

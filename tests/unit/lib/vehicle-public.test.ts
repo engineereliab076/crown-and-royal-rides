@@ -13,6 +13,7 @@ function dto(): VehiclePublicDetailDTO {
     saleStatus: "available",
     salePrice: 150_000_000,
     coverImage: {
+      id: "img-1",
       url: "https://res.cloudinary.com/demo/image/upload/safe.jpg",
       width: 1600,
       height: 900,

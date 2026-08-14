@@ -1,4 +1,3 @@
-import { getAdminServices } from "@/server/admin/services";
 import {
   adminRouteOptions,
   parseApiInput,
@@ -7,19 +6,17 @@ import {
 } from "@/server/http/admin-api";
 import { requireAdmin } from "@/server/http/auth-guard";
 import { withRouteHandler } from "@/server/http/handler";
-import { mediaSignatureRequestSchema } from "@/server/modules/vehicles/schemas";
+import { uploadAuthorizationRequestSchema } from "@/server/modules/vehicle-images/schemas";
+import { getVehicleImageService } from "@/server/vehicle-images/services";
 
 export const POST = withRouteHandler(async (request) => {
   const { actor } = await requireAdmin({ capability: "media:manage" });
-  const { vehicleId } = parseApiInput(
-    mediaSignatureRequestSchema,
+  const input = parseApiInput(
+    uploadAuthorizationRequestSchema,
     await readJsonBody(request),
     "Invalid upload authorization request.",
   );
   const authorization =
-    await getAdminServices().vehicleMediaService.createCoverUploadAuthorization(
-      actor,
-      vehicleId,
-    );
+    await getVehicleImageService().createUploadAuthorization(actor, input);
   return privateJson({ authorization });
 }, adminRouteOptions());

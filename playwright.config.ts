@@ -10,14 +10,15 @@ import { defineConfig, devices } from "@playwright/test";
 
 const isCI = Boolean(process.env.CI);
 const runDatabaseE2E = process.env.RUN_DATABASE_E2E === "true";
-const databaseE2ESpec = /purchase-inquiry\.spec\.ts$/;
+// Guarded, disposable-database E2E specs (Phase 3 inquiry + Phase 4 gallery).
+const databaseE2ESpec = /(?:purchase-inquiry|vehicle-gallery)\.spec\.ts$/;
 const explicitlyRequestedDatabaseE2E = process.argv.some((argument) =>
-  /(?:^|[\\/])purchase-inquiry\.spec\.ts$/.test(argument),
+  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery)\.spec\.ts$/.test(argument),
 );
 
 if (explicitlyRequestedDatabaseE2E && !runDatabaseE2E) {
   throw new Error(
-    "The Phase 3 database E2E spec requires RUN_DATABASE_E2E=true and the guarded disposable test-database variables.",
+    "The database E2E specs require RUN_DATABASE_E2E=true and the guarded disposable test-database variables.",
   );
 }
 
@@ -58,6 +59,10 @@ export default defineConfig({
   workers: isCI || runDatabaseE2E ? 1 : undefined,
   // HTML report only; never auto-open it (blocks CI and headless runs).
   reporter: [["html", { open: "never" }]],
+  // The database E2E runs against the dev server, whose turbopack routes compile
+  // on first hit; a slightly higher default web-first assertion timeout absorbs
+  // that cold start without per-assertion overrides.
+  expect: { timeout: 15_000 },
   use: {
     baseURL,
     trace: "retain-on-failure",

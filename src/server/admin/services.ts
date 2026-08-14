@@ -36,10 +36,8 @@ import {
   createVehicleService,
   type VehicleService,
 } from "@/server/modules/vehicles/service";
-import {
-  createVehicleMediaService,
-  type VehicleMediaService,
-} from "@/server/modules/vehicles/media-service";
+import { getVehicleImageService } from "@/server/vehicle-images/services";
+import type { VehicleImageService } from "@/server/modules/vehicle-images/service";
 
 const LOCAL_HASH_SECRET_FALLBACK =
   "crown-and-royal-rides:admin-audit:local-development-fallback";
@@ -49,7 +47,7 @@ export interface AdminServices {
   readonly auditLogService: AuditLogService;
   readonly settingsService: SettingsService;
   readonly vehicleService: VehicleService;
-  readonly vehicleMediaService: VehicleMediaService;
+  readonly vehicleImageService: VehicleImageService;
   readonly inquiryService: InquiryService;
   createRequestAuditContext(
     headers: Headers,
@@ -130,11 +128,7 @@ function build(): AdminServices {
       } catch {}
     },
   });
-  const vehicleMediaService = createVehicleMediaService({
-    repository: vehicleRepository,
-    mediaStorage: () => integrations.mediaStorage,
-    errorReporter: () => integrations.errorReporter,
-  });
+  const vehicleImageService = getVehicleImageService();
   const inquiryService = createInquiryService({
     repository: createPrismaInquiryRepository(prisma),
   });
@@ -144,7 +138,7 @@ function build(): AdminServices {
     auditLogService,
     settingsService,
     vehicleService,
-    vehicleMediaService,
+    vehicleImageService,
     inquiryService,
     createRequestAuditContext(headers: Headers, correlationId: string) {
       return createAuditContext({

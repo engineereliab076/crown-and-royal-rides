@@ -15,12 +15,13 @@ describe("public vehicle page boundaries", () => {
     expect(source).toContain("notFound()");
   });
 
-  it("renders the verified cover through next/image with trusted dimensions", () => {
-    expect(source).toContain('import Image from "next/image"');
-    expect(source).toContain("width={vehicle.coverImage.width}");
-    expect(source).toContain("height={vehicle.coverImage.height}");
-    expect(source).toContain("unoptimized");
-    expect(source).toContain('sizes="(min-width: 1280px)');
+  it("renders the responsive gallery instead of a single unoptimized cover", () => {
+    // Phase 4: the public page delegates to the accessible gallery component,
+    // which uses next/image through the Cloudinary loader (no `unoptimized`).
+    expect(source).toContain("<VehicleGallery");
+    expect(source).toContain("images={vehicle.images}");
+    expect(source).not.toContain("unoptimized");
+    expect(source).not.toContain('import Image from "next/image"');
   });
 
   it("never imports Prisma, provider SDKs, or renders forbidden metadata", () => {

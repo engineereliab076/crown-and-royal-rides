@@ -10,6 +10,7 @@ export type PublicationRequirement =
   "coverImage" | "saleMode" | "salePrice" | "description";
 
 export interface VehicleImageDTO {
+  readonly id: string;
   readonly url: string;
   readonly width: number;
   readonly height: number;
@@ -53,6 +54,7 @@ export interface VehicleAdminDTO extends VehiclePublicDetailDTO {
 }
 
 function mapImage(image: {
+  id: string;
   secureUrl: string;
   width: number;
   height: number;
@@ -61,6 +63,7 @@ function mapImage(image: {
   sortOrder: number;
 }): VehicleImageDTO {
   return {
+    id: image.id,
     url: image.secureUrl,
     width: image.width,
     height: image.height,

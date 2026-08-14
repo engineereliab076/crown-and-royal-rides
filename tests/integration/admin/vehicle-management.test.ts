@@ -109,7 +109,7 @@ describe("vehicle repository integration", () => {
       byteSize: 245_000,
       altText: "Toyota Land Cruiser cover image",
     });
-    expect(withCover.images).toEqual([
+    expect(withCover.images).toMatchObject([
       {
         secureUrl:
           "https://res.cloudinary.com/test-cloud/image/upload/v1/test/vehicles/cover.jpg",
@@ -120,6 +120,8 @@ describe("vehicle repository integration", () => {
         sortOrder: 0,
       },
     ]);
+    // The safe public image DTO now also carries the image id.
+    expect(withCover.images[0]?.id).toEqual(expect.any(String));
     const stored = await client().vehicleImage.findFirstOrThrow({
       where: { vehicleId: created.id },
     });

@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import Link from "next/link";
 
 import { VehiclePublishButton } from "@/components/admin/vehicle-publish-button";
-import { VehicleCoverUploader } from "@/components/admin/vehicle-cover-uploader";
+import { VehicleGalleryManager } from "@/components/admin/vehicle-gallery-manager";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatTzs } from "@/lib/money";
@@ -35,10 +34,12 @@ export default async function VehicleDetailPage({
 }) {
   const user = await requireAdminPage("content:manage");
   const { id } = await params;
-  const vehicle = await getAdminServices().vehicleService.getAdminById(
-    { id: user.id, role: user.role },
-    id,
-  );
+  const actor = { id: user.id, role: user.role };
+  const services = getAdminServices();
+  const vehicle = await services.vehicleService.getAdminById(actor, id);
+  const gallery = await services.vehicleImageService.getGallery(actor, {
+    vehicleId: id,
+  });
   const fields = [
     ["Year", String(vehicle.year)],
     ["Body type", pretty(vehicle.bodyType)],
@@ -82,25 +83,15 @@ export default async function VehicleDetailPage({
       </div>
       <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
         <section className="space-y-6 rounded-2xl border bg-card p-5 shadow-soft sm:p-6">
-          {vehicle.coverImage ? (
-            <figure className="overflow-hidden rounded-xl border bg-muted">
-              {/* The URL was independently verified by the server-side media adapter. */}
-              <Image
-                src={vehicle.coverImage.url}
-                alt={
-                  vehicle.coverImage.altText ??
-                  `${vehicle.brandName} ${vehicle.model}`
-                }
-                width={vehicle.coverImage.width}
-                height={vehicle.coverImage.height}
-                sizes="(min-width: 1024px) calc(100vw - 28rem), (min-width: 640px) calc(100vw - 3rem), calc(100vw - 2rem)"
-                unoptimized
-                className="aspect-video w-full object-cover"
-              />
-            </figure>
-          ) : (
-            <VehicleCoverUploader vehicleId={vehicle.id} />
-          )}
+          <VehicleGalleryManager
+            vehicleId={vehicle.id}
+            vehicle={{
+              brandName: vehicle.brandName,
+              model: vehicle.model,
+              year: vehicle.year,
+            }}
+            initialGallery={gallery}
+          />
           <dl className="grid gap-5 sm:grid-cols-2">
             {fields.map(([title, value]) => (
               <div key={title}>

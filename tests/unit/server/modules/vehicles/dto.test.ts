@@ -55,6 +55,7 @@ describe("vehicle DTO mappers", () => {
       record({
         images: [
           {
+            id: "img-1",
             secureUrl: "https://media.test.invalid/cover.jpg",
             width: 1600,
             height: 900,
@@ -65,7 +66,11 @@ describe("vehicle DTO mappers", () => {
         ],
       }),
     );
-    expect(dto.coverImage).toMatchObject({ width: 1600, height: 900 });
+    expect(dto.coverImage).toMatchObject({
+      id: "img-1",
+      width: 1600,
+      height: 900,
+    });
   });
 
   it("allow-lists public fields and excludes private/future database fields", () => {

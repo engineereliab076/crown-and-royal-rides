@@ -12,6 +12,7 @@ import type {
 } from "@/lib/vehicle-values";
 
 export const VEHICLE_IMAGE_SELECT = {
+  id: true,
   secureUrl: true,
   width: true,
   height: true,

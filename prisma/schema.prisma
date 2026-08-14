@@ -3,7 +3,8 @@
 // Phase 1 (0001_foundation) defines the genuinely shared foundation tables.
 // Phase 3, Group 1 adds the vehicle catalogue foundation: vehicles, vehicle
 // images, and the inquiry foundation (0002_vehicles, 0003_vehicle_images,
-// 0004_inquiries). Rental packages remain deferred to Phase 9 and are NOT
+// 0004_inquiries). Phase 5 adds the complete vehicle administration workflow
+// in 0005_vehicle_admin_workflow. Rental packages remain deferred to Phase 9 and are NOT
 // created here; `inquiries.package_id` is a bare nullable placeholder column
 // (no foreign key) that exists only so the subject-exclusivity CHECK can be
 // written now, before the packages table exists. See docs/runbook.md →
@@ -114,6 +115,26 @@ enum SaleStatus {
   sold
 
   @@map("sale_status")
+}
+
+/// Commercial availability of a vehicle offered for daily rental.
+enum RentalStatus {
+  available
+  reserved
+  rented
+  unavailable
+
+  @@map("rental_status")
+}
+
+/// Vehicle drivetrain layout.
+enum Drivetrain {
+  fwd
+  rwd
+  awd
+  four_wd
+
+  @@map("drivetrain")
 }
 
 /// The kind of request a customer submits. Phase 3 supports buying (`purchase`)
@@ -236,50 +257,67 @@ model MediaDeletionQueue {
   @@map("media_deletion_queue")
 }
 
-/// Vehicle catalogue entry (Phase 3, `0002_vehicles`).
+/// Vehicle catalogue entry (Phase 3 foundation plus Phase 5 workflow fields).
 ///
-/// `brandName` is denormalized from `brands.name` at creation so a listing keeps
-/// a stable display/search value independent of later brand edits; the live
-/// `brand` relation is still authoritative for the brand identity. Exactly the
-/// minimal single commercial mode is modeled here — sale — as `isForSale`,
-/// `saleStatus`, and `salePrice` (a PostgreSQL `bigint`). Rental packages,
-/// featured ranking, full specifications, and private identifiers belong to
-/// later phases and are intentionally absent.
+/// `brandName` is denormalized from `brands.name`; the Phase 5 brand service
+/// propagates renames transactionally so display and generated search content
+/// cannot drift. Sale and daily-rental availability are independent modes.
 ///
 /// Constructs kept as reviewed raw SQL (not representable in this schema, see the
 /// migration header and `db:migrate:verify`): the `pg_trgm` extension; the STORED
 /// generated columns `search_text` and `search_vector` (declared here only as
 /// opaque `Unsupported` columns); the GIN full-text and pg_trgm indexes; and all
-/// CHECK constraints (positive sale price, sale-mode field requirements, and the
-/// bounded `year`).
+/// CHECK constraints (commercial consistency, bounded specification fields,
+/// featured timestamp consistency, and the bounded `year`).
 model Vehicle {
-  id           String                   @id @default(uuid()) @db.Uuid
-  brandId      String                   @map("brand_id") @db.Uuid
-  brandName    String                   @map("brand_name")
-  model        String
-  slug         String                   @unique
-  year         Int
-  bodyType     BodyType                 @map("body_type")
-  condition    VehicleCondition
-  transmission Transmission
-  fuelType     FuelType                 @map("fuel_type")
-  driverOption DriverOption             @map("driver_option")
-  listingState ListingState             @default(draft) @map("listing_state")
-  isForSale    Boolean                  @default(false) @map("is_for_sale")
-  saleStatus   SaleStatus?              @map("sale_status")
-  salePrice    BigInt?                  @map("sale_price")
-  description  String?
-  publishedAt  DateTime?                @map("published_at") @db.Timestamptz(6)
+  id                 String                   @id @default(uuid()) @db.Uuid
+  brandId            String                   @map("brand_id") @db.Uuid
+  brandName          String                   @map("brand_name")
+  model              String
+  slug               String                   @unique
+  year               Int
+  bodyType           BodyType                 @map("body_type")
+  condition          VehicleCondition
+  transmission       Transmission
+  fuelType           FuelType                 @map("fuel_type")
+  driverOption       DriverOption             @map("driver_option")
+  listingState       ListingState             @default(draft) @map("listing_state")
+  isForSale          Boolean                  @default(false) @map("is_for_sale")
+  saleStatus         SaleStatus?              @map("sale_status")
+  salePrice          BigInt?                  @map("sale_price")
+  registrationNumber String?                  @map("registration_number")
+  chassisNumber      String?                  @map("chassis_number")
+  features           String[]                 @default([])
+  location           String?
+  isNegotiable       Boolean                  @default(false) @map("is_negotiable")
+  minRentalDays      Int?                     @map("min_rental_days")
+  driverNote         String?                  @map("driver_note")
+  isForRent          Boolean                  @default(false) @map("is_for_rent")
+  rentalStatus       RentalStatus?            @map("rental_status")
+  rentalDailyPrice   BigInt?                  @map("rental_daily_price")
+  isFeatured         Boolean                  @default(false) @map("is_featured")
+  featuredAt         DateTime?                @map("featured_at") @db.Timestamptz(6)
+  lastVerifiedAt     DateTime?                @map("last_verified_at") @db.Timestamptz(6)
+  mileageKm          Int?                     @map("mileage_km")
+  engineCc           Int?                     @map("engine_cc")
+  engineDescription  String?                  @map("engine_description")
+  seats              Int?                     @db.SmallInt
+  doors              Int?                     @db.SmallInt
+  exteriorColor      String?                  @map("exterior_color")
+  interiorColor      String?                  @map("interior_color")
+  drivetrain         Drivetrain?
+  description        String?
+  publishedAt        DateTime?                @map("published_at") @db.Timestamptz(6)
   // STORED generated columns maintained by 0002_vehicles. PostgreSQL recomputes
   // them on every write; `@default(dbgenerated(...))` is exactly how Prisma
   // introspects a STORED generated column, so schema and migration agree and
   // `migrate diff` reports no drift. The GENERATED clause, the GIN full-text and
   // pg_trgm indexes, and the pg_trgm extension are reviewed raw SQL in the
   // migration. Application code must never write these columns.
-  searchText   String?                  @default(dbgenerated("((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text))")) @map("search_text")
-  searchVector Unsupported("tsvector")? @default(dbgenerated("to_tsvector('english'::regconfig, ((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text)))")) @map("search_vector")
-  createdAt    DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  searchText         String?                  @default(dbgenerated("((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text))")) @map("search_text")
+  searchVector       Unsupported("tsvector")? @default(dbgenerated("to_tsvector('english'::regconfig, ((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text)))")) @map("search_vector")
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   // A vehicle must belong to a real brand; Restrict prevents deleting a brand
   // that still has vehicles (the denormalized brandName is for display/search,

@@ -5,7 +5,13 @@ import {
 } from "@/server/modules/auth/capabilities";
 
 export type AdminNavigationIcon =
-  "dashboard" | "vehicles" | "inquiries" | "users" | "audit" | "settings";
+  | "dashboard"
+  | "vehicles"
+  | "brands"
+  | "inquiries"
+  | "users"
+  | "audit"
+  | "settings";
 
 export interface AdminNavigationItem {
   readonly label: string;
@@ -21,6 +27,12 @@ export const ADMIN_NAVIGATION: readonly AdminNavigationItem[] = Object.freeze([
     label: "Vehicles",
     href: "/admin/vehicles",
     icon: "vehicles",
+    capability: "content:manage",
+  },
+  {
+    label: "Brands",
+    href: "/admin/brands",
+    icon: "brands",
     capability: "content:manage",
   },
   {

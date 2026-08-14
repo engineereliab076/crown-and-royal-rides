@@ -135,7 +135,7 @@ describe("vehicle admin routes", () => {
     await expect(response.json()).resolves.toEqual({ vehicle: DTO });
     expect(mocks.create).toHaveBeenCalledWith(
       { id: ACTOR_ID, role: "owner" },
-      VALID,
+      { ...VALID, isForRent: false },
     );
   });
 

@@ -23,9 +23,12 @@ describe("Prisma vehicle repository", () => {
   it("uses explicit selections with no generated or private fields", () => {
     expect(VEHICLE_ADMIN_SELECT).not.toHaveProperty("searchText");
     expect(VEHICLE_ADMIN_SELECT).not.toHaveProperty("searchVector");
-    expect(VEHICLE_ADMIN_SELECT).not.toHaveProperty("registrationNumber");
+    expect(VEHICLE_ADMIN_SELECT).toHaveProperty("registrationNumber", true);
+    expect(VEHICLE_ADMIN_SELECT).toHaveProperty("chassisNumber", true);
     expect(VEHICLE_PUBLIC_SELECT).not.toHaveProperty("brandId");
     expect(VEHICLE_PUBLIC_SELECT).not.toHaveProperty("listingState");
+    expect(VEHICLE_PUBLIC_SELECT).not.toHaveProperty("registrationNumber");
+    expect(VEHICLE_PUBLIC_SELECT).not.toHaveProperty("chassisNumber");
   });
 
   it("filters public lookup to published listings", async () => {
@@ -42,7 +45,7 @@ describe("Prisma vehicle repository", () => {
     const count = vi.fn().mockResolvedValue(0);
     await repositoryWith({ findMany, count }).listAdmin({ page: 2, limit: 20 });
     expect(findMany.mock.calls[0]?.[0]).toMatchObject({
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
       skip: 20,
       take: 20,
       select: VEHICLE_ADMIN_SELECT,

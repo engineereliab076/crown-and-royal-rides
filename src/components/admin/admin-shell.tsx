@@ -7,6 +7,7 @@ import {
   LayoutDashboardIcon,
   MenuIcon,
   SettingsIcon,
+  TagsIcon,
   UsersIcon,
   MessageSquareTextIcon,
 } from "lucide-react";
@@ -33,6 +34,7 @@ import { cn } from "@/lib/utils";
 const ICONS: Record<AdminNavigationIcon, typeof LayoutDashboardIcon> = {
   dashboard: LayoutDashboardIcon,
   vehicles: CarFrontIcon,
+  brands: TagsIcon,
   inquiries: MessageSquareTextIcon,
   users: UsersIcon,
   audit: ClipboardListIcon,
@@ -110,8 +112,20 @@ export function AdminShell({
   user: { readonly name: string; readonly role: string };
 }) {
   const pathname = usePathname();
-  const current = navigation.find((item) => item.href === pathname);
+  const current = [...navigation]
+    .sort((a, b) => b.href.length - a.href.length)
+    .find(
+      (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
+    );
   const title = current?.label ?? "Dashboard";
+  const nestedVehicleLabel =
+    pathname === "/admin/vehicles/new"
+      ? "Add vehicle"
+      : pathname.endsWith("/edit")
+        ? "Edit vehicle"
+        : /^\/admin\/vehicles\/[^/]+$/.test(pathname)
+          ? "Vehicle detail"
+          : null;
 
   return (
     <div className="min-h-screen bg-surface-subtle lg:grid lg:grid-cols-[16rem_1fr]">
@@ -177,11 +191,35 @@ export function AdminShell({
                   <>
                     <li aria-hidden="true">/</li>
                     <li
-                      className="truncate font-medium text-foreground"
-                      aria-current="page"
+                      className={
+                        nestedVehicleLabel
+                          ? "truncate"
+                          : "truncate font-medium text-foreground"
+                      }
+                      aria-current={nestedVehicleLabel ? undefined : "page"}
                     >
-                      {title}
+                      {nestedVehicleLabel && current ? (
+                        <Link
+                          href={current.href}
+                          className="rounded outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {title}
+                        </Link>
+                      ) : (
+                        title
+                      )}
                     </li>
+                    {nestedVehicleLabel ? (
+                      <>
+                        <li aria-hidden="true">/</li>
+                        <li
+                          className="truncate font-medium text-foreground"
+                          aria-current="page"
+                        >
+                          {nestedVehicleLabel}
+                        </li>
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </ol>

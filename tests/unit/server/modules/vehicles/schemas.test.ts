@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createVehicleSchema } from "@/server/modules/vehicles/schemas";
+import {
+  createVehicleSchema,
+  vehicleBasicsUpdateSchema,
+  vehicleModesAndPricingUpdateSchema,
+  vehicleSpecificationsUpdateSchema,
+} from "@/server/modules/vehicles/schemas";
 
 const VALID = {
   brandId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
@@ -81,4 +86,71 @@ describe("vehicle schemas", () => {
       ).toBe(false);
     },
   );
+
+  it("de-duplicates trimmed features predictably on create", () => {
+    const parsed = createVehicleSchema.parse({
+      ...VALID,
+      features: [" ABS ", "ABS", "abs", "Air conditioning"],
+    });
+    expect(parsed.features).toEqual(["ABS", "abs", "Air conditioning"]);
+  });
+
+  it.each(["registrationNumber", "chassisNumber"] as const)(
+    "create rejects the private identifier %s (specifications-only field)",
+    (key) => {
+      expect(
+        createVehicleSchema.safeParse({ ...VALID, [key]: "T 123" }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each(["registrationNumber", "chassisNumber"] as const)(
+    "basics update rejects the private identifier %s (specifications-only field)",
+    (key) => {
+      expect(
+        vehicleBasicsUpdateSchema.safeParse({
+          model: "Land Cruiser",
+          [key]: "T 123",
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("accepts and normalizes private identifiers through the specifications step", () => {
+    const parsed = vehicleSpecificationsUpdateSchema.parse({
+      registrationNumber: "  t 123-abc ",
+      chassisNumber: " ab-cd 99 ",
+    });
+    expect(parsed.registrationNumber).toBe("T 123-ABC");
+    expect(parsed.chassisNumber).toBe("AB-CD 99");
+  });
+
+  it("specifications update clears each private identifier to null", () => {
+    const parsed = vehicleSpecificationsUpdateSchema.parse({
+      registrationNumber: "",
+      chassisNumber: "   ",
+    });
+    expect(parsed.registrationNumber).toBeNull();
+    expect(parsed.chassisNumber).toBeNull();
+  });
+
+  it("requires an internally complete rental group and atomically nulls disabled fields", () => {
+    expect(
+      createVehicleSchema.safeParse({ ...VALID, isForRent: true }).success,
+    ).toBe(false);
+    const disabled = vehicleModesAndPricingUpdateSchema.parse({
+      isForSale: true,
+      saleStatus: "available",
+      salePrice: 10,
+      isForRent: false,
+      rentalStatus: "rented",
+      rentalDailyPrice: 20,
+      minRentalDays: 2,
+    });
+    expect(disabled).toMatchObject({
+      rentalStatus: null,
+      rentalDailyPrice: null,
+      minRentalDays: null,
+    });
+  });
 });

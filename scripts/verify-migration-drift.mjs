@@ -23,6 +23,8 @@
 //        0003 — the partial one-cover-per-vehicle unique index; the DEFERRABLE
 //               unique (vehicle_id, sort_order) constraint.
 //        0004 — the three inquiry subject/type CHECK constraints.
+//        0005 — rental/drivetrain enums; fourteen vehicle workflow CHECKs;
+//               partial private-identifier unique indexes and featured index.
 //
 // A safe URL check refuses to run against anything that is not clearly a
 // disposable test/scratch database. No URL, host, or credential is ever printed.
@@ -197,6 +199,20 @@ async function main() {
       "inquiries_subject_exclusive_check",
       "inquiries_purchase_fields_check",
       "inquiries_viewing_fields_check",
+      "vehicles_rental_daily_price_positive_check",
+      "vehicles_rental_enabled_fields_check",
+      "vehicles_rental_disabled_null_check",
+      "vehicles_min_rental_days_range_check",
+      "vehicles_mileage_km_range_check",
+      "vehicles_engine_cc_range_check",
+      "vehicles_seats_range_check",
+      "vehicles_doors_range_check",
+      "vehicles_driver_note_length_check",
+      "vehicles_engine_description_length_check",
+      "vehicles_exterior_color_length_check",
+      "vehicles_interior_color_length_check",
+      "vehicles_features_count_check",
+      "vehicles_featured_consistency_check",
     ];
     const checks = await verifyClient.query(
       `SELECT conname FROM pg_constraint
@@ -274,13 +290,48 @@ async function main() {
         "vehicle_images_vehicle_id_sort_order_key is missing or not DEFERRABLE.",
       );
     }
+
+    const phase5Indexes = await verifyClient.query(
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE tablename = 'vehicles' AND indexname = ANY($1::text[])`,
+      [
+        [
+          "vehicles_registration_number_key",
+          "vehicles_chassis_number_key",
+          "vehicles_featured_at_idx",
+        ],
+      ],
+    );
+    const phase5IndexByName = new Map(
+      phase5Indexes.rows.map((row) => [row.indexname, row.indexdef]),
+    );
+    for (const name of [
+      "vehicles_registration_number_key",
+      "vehicles_chassis_number_key",
+    ]) {
+      const definition = phase5IndexByName.get(name) ?? "";
+      if (!/UNIQUE/i.test(definition) || !/WHERE/i.test(definition)) {
+        fail(`${name} is missing, non-unique, or not partial.`);
+      }
+    }
+    const featuredDefinition =
+      phase5IndexByName.get("vehicles_featured_at_idx") ?? "";
+    if (
+      !/featured_at.*DESC/i.test(featuredDefinition) ||
+      !/WHERE .*is_featured/i.test(featuredDefinition)
+    ) {
+      fail(
+        "vehicles_featured_at_idx is missing or does not preserve the featured ordering/predicate.",
+      );
+    }
   } finally {
     await verifyClient.end();
   }
   console.log(
     "✓ Intentional raw SQL present (0001 citext/singleton/NOT NULL; 0002 pg_trgm,\n" +
       "  generated columns, GIN + pg_trgm indexes, sale/year CHECKs; 0003 partial\n" +
-      "  cover index + DEFERRABLE ordering; 0004 inquiry subject/type CHECKs).",
+      "  cover index + DEFERRABLE ordering; 0004 inquiry subject/type CHECKs;\n" +
+      "  0005 workflow CHECKs + partial identifier/featured indexes).",
   );
   console.log("✔ Migration drift check passed.");
 }

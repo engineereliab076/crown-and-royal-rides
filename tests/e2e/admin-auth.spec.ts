@@ -8,6 +8,11 @@ test("anonymous visitors are redirected from every implemented admin page", asyn
     "/admin/users",
     "/admin/audit-log",
     "/admin/settings",
+    "/admin/vehicles",
+    "/admin/vehicles/new",
+    "/admin/vehicles/3f2504e0-4f89-41d3-9a0c-0305e82c3302",
+    "/admin/vehicles/3f2504e0-4f89-41d3-9a0c-0305e82c3302/edit",
+    "/admin/brands",
   ]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/admin\/login(?:\?|$)/);

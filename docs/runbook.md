@@ -584,6 +584,110 @@ Drafts and missing slugs render Next.js 404.
 _No migration was added in Phase 4._ The gallery, ordering, single-cover, and
 deletion-outbox behaviors all use the existing `0002`/`0003` schema unchanged.
 
+### Phase 5 — vehicle administration workflow
+
+**Migration `0005_vehicle_admin_workflow`.** This additive migration is frozen.
+It adds independent rental state and pricing, drivetrain, location, negotiable
+pricing, driver notes, features, specifications, private identifiers, featured
+ordering, and verification timestamps. Rental mode is one atomic group:
+`is_for_rent = true` requires `rental_status`, a positive whole-TZS
+`rental_daily_price`, and `min_rental_days` from 1–365; disabling rental clears
+all three nullable values. Mileage is 0–2,000,000 km, engine capacity is
+1–10,000 cc, seats 1–60, doors 1–8, and features are capped at 50. Featured
+state and timestamp must agree. Registration and chassis numbers are optional,
+trimmed and upper-cased by the application, then protected by partial unique
+indexes when present.
+
+**Administrative draft workflow.** A content manager creates the draft only
+after Step 1 (Basics) succeeds, then resumes it at the real
+`/admin/vehicles/<id>/edit?step=2` URL. The shared create/edit flow persists only
+on explicit Save or Save and continue: (1) Basics, (2) Modes and pricing,
+(3) Driver arrangement, (4) Specifications, (5) Description and features,
+(6) the canonical Phase 4 gallery, and (7) Review. Refreshes load the committed
+server DTO. Later steps may be opened directly for an existing vehicle, but the
+server readiness checklist remains authoritative. Draft form values are never
+written to browser storage or URLs; registration and chassis values remain in
+admin-only fields and DTOs.
+
+**Publication checklist.** Publication requires the server checklist to be
+fully met: brand, model, year, body type, condition, transmission, fuel type,
+drivetrain, location, at least one commercial mode and its complete status/
+pricing group, description of at least 40 characters, at least one image,
+exactly one cover, alt text on every image, used-vehicle mileage, a driver note
+when `with_driver`, exterior colour, and seats. The Review step groups every
+missing server item by its fixing step. Existing published rows missing newer
+fields remain published and show a legacy-incomplete warning; there is no
+automatic unpublish.
+
+**Lifecycle and commercial transition matrix.** Routes do not call status
+repository methods directly. All lifecycle and subsequent commercial-status
+changes use `transitionVehicle()`:
+
+| Action                                                                       | Allowed from / prerequisite | Result                                          |
+| ---------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------- |
+| `publish`                                                                    | ready draft                 | published; sets `publishedAt`                   |
+| `unpublish`                                                                  | published                   | draft; clears publication and featured state    |
+| `archive`                                                                    | draft or published          | archived; clears publication and featured state |
+| `restore`                                                                    | archived                    | draft; remains unfeatured                       |
+| `sale_available`, `sale_reserved`, `sale_sold`                               | sale mode enabled           | changes only sale status                        |
+| `rental_available`, `rental_reserved`, `rental_rented`, `rental_unavailable` | rental mode enabled         | changes only rental status                      |
+
+Sale and rental states are independent: `sale_sold` does not alter rental, so a
+sold vehicle can remain publicly rentable. Initial mode enablement uses the
+atomic modes/pricing PATCH required by the database checks; later status changes
+use only the transition endpoint. Invalid source states return the safe
+`INVALID_VEHICLE_TRANSITION` response. Public-impacting committed transitions
+revalidate the vehicle cache tag server-side.
+
+**Featured and verification operations.** Only a published, readiness-complete
+vehicle can be featured. A serializable transaction locks the featured set and
+the target; the ninth concurrent attempt returns `FEATURED_LIMIT_REACHED`, so
+the displayed “N of 8” count is guidance, never the protection boundary.
+Unpublish and archive always clear featured state. Featured public ordering is
+`featured_at DESC, id ASC`. “Still available” calls `markVerified()` and changes
+only `last_verified_at`; it never changes listing, sale, rental, or featured
+state and is not an inquiry side effect.
+
+**Brand propagation.** Brand create/update/delete is a capability-checked,
+audited service workflow. A rename updates the brand and every linked vehicle's
+denormalized display/search name inside one serializable transaction; the UI
+makes one Brand API request and never performs vehicle-by-vehicle updates.
+Brands referenced by vehicles cannot be deleted and return `BRAND_IN_USE`.
+
+**Private identifier policy.** Registration and chassis numbers may appear only
+in authenticated admin/server code and tests. They are excluded from public
+repository projections and DTOs, catalogue pages, metadata, public APIs,
+filter/search query parameters, analytics, logs, and client error reports.
+Never add them to a public preview or serialize them into a shareable URL.
+
+**Public settings groundwork.** `GET /api/settings/public` returns the exact
+public settings allow-list through `getPublicSettings()`. Notification recipient
+emails, `updatedById`, and timestamps are excluded. Reads use Next's server cache
+for 300 seconds under the stable `settings` tag; settings writes revalidate that
+tag. There is no process-memory settings cache, and Phase 5 does not consume the
+DTO on the homepage.
+
+**Guarded Phase 5 end-to-end.** `tests/e2e/phase5-vehicle-admin.spec.ts` drives
+the full lifecycle (create, refresh-resume, publish, mode/status, feature,
+verify, brand rename, archive, restore) and runs only under the same guarded
+disposable-database contract as the Phase 3 slice (`RUN_DATABASE_E2E=true`, the
+`TEST_*` `test`/`scratch` URLs, and `ALLOW_TEST_DATABASE_DESTRUCTIVE_OPERATIONS=true`);
+Cloudinary upload traffic is intercepted, so no live provider is called. It runs
+on desktop Chromium and iPhone 13/WebKit; Pixel 5 skips it. Run this spec against
+the compiled production server, not the dev server: this single spec exercises
+many admin routes, and under `pnpm dev` Turbopack's first-request compilation is
+slow enough on WebKit to exhaust the spec's 480 s budget, so build first and use
+the `CI=true` (`next start`) path, for example:
+
+```bash
+pnpm build
+CI=true RUN_DATABASE_E2E=true \
+  TEST_DATABASE_URL="postgresql://USER:PW@localhost:PORT/crown_royal_rides_phase5_test?schema=public" \
+  TEST_DIRECT_DATABASE_URL="$TEST_DATABASE_URL" \
+  ALLOW_TEST_DATABASE_DESTRUCTIVE_OPERATIONS=true \
+  pnpm exec playwright test tests/e2e/phase5-vehicle-admin.spec.ts
+```
+
 **Working with migrations during development.**
 
 - Keep migrations incremental and reviewable. Each is a small, readable step.

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { VehicleCreateForm } from "@/components/admin/vehicle-create-form";
+import { VehicleFormWorkflow } from "@/components/admin/vehicle-form-workflow";
 import { Button } from "@/components/ui/button";
 import { getAdminServices } from "@/server/admin/services";
 import { requireAdminPage } from "@/server/auth/page-guard";
@@ -13,10 +13,11 @@ export const metadata: Metadata = {
 
 export default async function NewVehiclePage() {
   const user = await requireAdminPage("content:manage");
-  const brands = await getAdminServices().vehicleService.listBrands({
+  const brands = await getAdminServices().brandService.list({
     id: user.id,
     role: user.role,
   });
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -28,8 +29,8 @@ export default async function NewVehiclePage() {
             Add vehicle
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Create a sale-only draft. Images are added in the next
-            implementation group.
+            Create a private draft, then complete the seven-step publication
+            workflow.
           </p>
         </div>
         <Button asChild variant="outline">
@@ -39,13 +40,23 @@ export default async function NewVehiclePage() {
       {brands.length === 0 ? (
         <div
           role="status"
-          className="rounded-2xl border bg-card p-8 text-center text-sm text-muted-foreground"
+          className="rounded-2xl border bg-card p-8 text-center"
         >
-          No brands are available. Add foundation brand data before creating a
-          vehicle.
+          <h2 className="font-semibold">Add a brand first</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Every vehicle needs a managed brand before its draft can be created.
+          </p>
+          <Button asChild className="mt-5">
+            <Link href="/admin/brands">Manage brands</Link>
+          </Button>
         </div>
       ) : (
-        <VehicleCreateForm brands={brands} />
+        <VehicleFormWorkflow
+          brands={brands}
+          initialVehicle={null}
+          initialGallery={null}
+          initialStep={1}
+        />
       )}
     </div>
   );

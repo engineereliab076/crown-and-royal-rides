@@ -20,6 +20,14 @@ export const TRANSMISSIONS = ["automatic", "manual"] as const;
 export const FUEL_TYPES = ["petrol", "diesel", "hybrid", "electric"] as const;
 export const DRIVER_OPTIONS = ["with_driver", "without_driver"] as const;
 export const SALE_STATUSES = ["available", "reserved", "sold"] as const;
+export const RENTAL_STATUSES = [
+  "available",
+  "reserved",
+  "rented",
+  "unavailable",
+] as const;
+export const DRIVETRAINS = ["fwd", "rwd", "awd", "four_wd"] as const;
+export const LISTING_STATES = ["draft", "published", "archived"] as const;
 
 export type BodyTypeValue = (typeof BODY_TYPES)[number];
 export type VehicleConditionValue = (typeof VEHICLE_CONDITIONS)[number];
@@ -27,3 +35,6 @@ export type TransmissionValue = (typeof TRANSMISSIONS)[number];
 export type FuelTypeValue = (typeof FUEL_TYPES)[number];
 export type DriverOptionValue = (typeof DRIVER_OPTIONS)[number];
 export type SaleStatusValue = (typeof SALE_STATUSES)[number];
+export type RentalStatusValue = (typeof RENTAL_STATUSES)[number];
+export type DrivetrainValue = (typeof DRIVETRAINS)[number];
+export type ListingStateValue = (typeof LISTING_STATES)[number];

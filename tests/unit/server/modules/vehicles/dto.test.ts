@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  toVehicleCardDTO,
   toVehicleAdminDTO,
   toVehiclePublicDetailDTO,
 } from "@/server/modules/vehicles/dto";
@@ -81,11 +82,28 @@ describe("vehicle DTO mappers", () => {
       searchVector: BigInt(1),
     };
     const dto = toVehiclePublicDetailDTO(source);
+    const card = toVehicleCardDTO(source);
     const serialized = JSON.stringify(dto);
+    const serializedCard = JSON.stringify(card);
     expect(dto).not.toHaveProperty("brandId");
     expect(dto).not.toHaveProperty("listingState");
     expect(serialized).not.toContain("registrationNumber");
     expect(serialized).not.toContain("chassisNumber");
     expect(serialized).not.toContain("searchVector");
+    expect(serializedCard).not.toContain("registrationNumber");
+    expect(serializedCard).not.toContain("chassisNumber");
+  });
+
+  it("maps rental BigInt money to a JSON-safe number", () => {
+    const dto = toVehicleAdminDTO(
+      record({
+        isForRent: true,
+        rentalStatus: "available",
+        rentalDailyPrice: BigInt(250_000),
+        minRentalDays: 2,
+      }),
+    );
+    expect(dto.rentalDailyPrice).toBe(250_000);
+    expect(() => JSON.stringify(dto)).not.toThrow();
   });
 });

@@ -201,26 +201,37 @@ test.describe("vehicle gallery vertical slice", () => {
       await expect(page).toHaveURL(/\/admin$/, { timeout: 60_000 });
 
       await page.goto("/admin/vehicles/new");
-      await page.getByLabel("Brand").click();
-      await page.getByRole("option", { name: brandName, exact: true }).click();
-      await page.getByLabel("Driver option").click();
-      await page
-        .getByRole("option", { name: "Without driver", exact: true })
-        .click();
+      await page.getByLabel("Brand").selectOption({ label: brandName });
       await page.getByLabel("Model").fill(`Prado ${marker}`);
       await page.getByLabel("Year").fill("2025");
+      await page.getByLabel("Location").fill("Dar es Salaam");
+      await page
+        .getByRole("button", { name: "Create draft and continue" })
+        .click();
+      await expect(page).toHaveURL(
+        /\/admin\/vehicles\/[0-9a-f-]+\/edit\?step=2$/,
+        { timeout: 30_000 },
+      );
+      vehicleId = page.url().match(/\/vehicles\/([0-9a-f-]+)\/edit/)?.[1];
+      expect(vehicleId).toBeTruthy();
+
+      await page.getByText("Offer this vehicle for sale").click();
       await page.getByLabel("Sale price (TZS)").fill("145000000");
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=3$/);
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=4$/);
+      await page.getByLabel("Seats").fill("7");
+      await page.getByLabel("Exterior colour").fill("Pearl white");
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=5$/);
       await page
         .getByLabel("Description")
         .fill(
           "A verified E2E gallery vehicle with enough descriptive text to publish.",
         );
-      await page.getByRole("button", { name: "Create vehicle" }).click();
-      await expect(page).toHaveURL(/\/admin\/vehicles\/[0-9a-f-]+$/, {
-        timeout: 30_000,
-      });
-      vehicleId = page.url().split("/").at(-1);
-      expect(vehicleId).toBeTruthy();
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=6$/);
 
       const deleteButtons = page.getByRole("button", { name: /^Delete / });
       const fileInput = page.getByLabel("Add images");
@@ -335,6 +346,8 @@ test.describe("vehicle gallery vertical slice", () => {
       expect(promoted.rows[0]?.id).not.toBe(removedCoverId);
 
       // ── Publish ──────────────────────────────────────────────────────────
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=7$/);
       await page.getByRole("button", { name: "Publish vehicle" }).click();
       await expect(page.getByRole("button", { name: "Published" })).toBeVisible(
         { timeout: 20_000 },

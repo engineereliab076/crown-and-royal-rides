@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { Pool } from "pg";
 
-import { InMemoryMediaStorage } from "../../src/server/integrations/media-storage/in-memory";
 import { loadTestDatabaseConfig } from "../integration/support/test-database-env";
 
 const execFileAsync = promisify(execFile);
@@ -87,87 +86,46 @@ test.describe("purchase inquiry vertical slice", () => {
       await expect(page).toHaveURL(/\/admin$/);
 
       await page.goto("/admin/vehicles/new");
-      await page.getByLabel("Brand").click();
-      await page.getByRole("option", { name: brandName, exact: true }).click();
-      await page.getByLabel("Driver option").click();
-      await page
-        .getByRole("option", { name: "Without driver", exact: true })
-        .click();
+      await page.getByLabel("Brand").selectOption({ label: brandName });
       await page.getByLabel("Model").fill(`Prado ${marker}`);
       await page.getByLabel("Year").fill("2025");
+      await page.getByLabel("Location").fill("Dar es Salaam");
+      await page
+        .getByRole("button", { name: "Create draft and continue" })
+        .click();
+      await expect(page).toHaveURL(
+        /\/admin\/vehicles\/[0-9a-f-]+\/edit\?step=2$/,
+      );
+      vehicleId = page.url().match(/\/vehicles\/([0-9a-f-]+)\/edit/)?.[1];
+      expect(vehicleId).toBeTruthy();
+      await page.getByText("Offer this vehicle for sale").click();
       await page.getByLabel("Sale price (TZS)").fill("145000000");
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await page.getByLabel("Seats").fill("7");
+      await page.getByLabel("Exterior colour").fill("Pearl white");
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=5$/);
       await page
         .getByLabel("Description")
         .fill(
           "A verified E2E vehicle with enough descriptive text to pass publication.",
         );
-      await page.getByRole("button", { name: "Create vehicle" }).click();
-      await expect(page).toHaveURL(/\/admin\/vehicles\/[0-9a-f-]+$/);
-      vehicleId = page.url().split("/").at(-1);
-      expect(vehicleId).toBeTruthy();
-
-      const storage = new InMemoryMediaStorage();
-      const authorization = await storage.createUploadSignature({
-        folder: "vehicles",
-        ownerType: "vehicle",
-        ownerId: vehicleId as string,
-      });
-      const completed = {
-        publicId: authorization.publicId,
-        version: 1,
-        signature: "e2e-upload-signature",
-        secureUrl: `https://media.test.invalid/assets/${authorization.publicId}.jpg`,
-        width: 1600,
-        height: 900,
-        bytes: 4096,
-        format: "jpg",
-        resourceType: "image",
-      } as const;
-      storage.registerExpectedUpload(completed);
-
-      await page.route("**/api/admin/media/signature", async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ authorization }),
-        });
-      });
-      await page.route("https://uploads.test.invalid/**", async (route) => {
-        await storage.verifyUploadResult(completed);
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            public_id: completed.publicId,
-            version: completed.version,
-            signature: completed.signature,
-          }),
-        });
-      });
-      await page.route("**/api/admin/vehicles/*/cover", async (route) => {
-        await db.query(
-          `INSERT INTO vehicle_images
-            (id, vehicle_id, public_id, secure_url, width, height, format,
-             byte_size, alt_text, sort_order, is_cover, created_at)
-           VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, 0, true, NOW())`,
-          [
-            randomUUID(),
-            vehicleId,
-            completed.publicId,
-            completed.secureUrl,
-            completed.width,
-            completed.height,
-            completed.format,
-            completed.bytes,
-            "E2E vehicle verified cover image",
-          ],
-        );
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ vehicle: { id: vehicleId } }),
-        });
-      });
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=6$/);
+      await db.query(
+        `INSERT INTO vehicle_images
+          (id, vehicle_id, public_id, secure_url, width, height, format,
+           byte_size, alt_text, sort_order, is_cover, created_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, 1600, 900, 'jpg', 4096, $5, 0, true, NOW())`,
+        [
+          randomUUID(),
+          vehicleId,
+          `vehicles/vehicle/${vehicleId}/inquiry-cover`,
+          `https://media.test.invalid/assets/${vehicleId}.jpg`,
+          "E2E vehicle verified cover image",
+        ],
+      );
       await page.route("https://media.test.invalid/**", (route) =>
         route.fulfill({
           status: 200,
@@ -176,15 +134,9 @@ test.describe("purchase inquiry vertical slice", () => {
         }),
       );
 
-      await page.getByLabel("Cover image file").setInputFiles({
-        name: "cover.jpg",
-        mimeType: "image/jpeg",
-        buffer: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
-      });
-      await page.getByRole("button", { name: "Upload cover" }).click();
-      await expect(page.getByRole("status")).toHaveText(
-        "Cover image attached.",
-      );
+      await page.reload();
+      await page.getByRole("button", { name: "Save and continue" }).click();
+      await expect(page).toHaveURL(/step=7$/);
       await page.getByRole("button", { name: "Publish vehicle" }).click();
       await expect(
         page.getByRole("button", { name: "Published" }),

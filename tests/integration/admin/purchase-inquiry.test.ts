@@ -55,7 +55,15 @@ describe("purchase inquiry integration", () => {
     });
     const before = await client().vehicle.findUniqueOrThrow({
       where: { id: vehicle.id },
-      select: { listingState: true, saleStatus: true, updatedAt: true },
+      select: {
+        listingState: true,
+        saleStatus: true,
+        rentalStatus: true,
+        isFeatured: true,
+        featuredAt: true,
+        lastVerifiedAt: true,
+        updatedAt: true,
+      },
     });
     const submission = await service.submitPurchaseInquiry(
       {
@@ -85,7 +93,15 @@ describe("purchase inquiry integration", () => {
     expect(await client().inquiry.count()).toBe(1);
     const after = await client().vehicle.findUniqueOrThrow({
       where: { id: vehicle.id },
-      select: { listingState: true, saleStatus: true, updatedAt: true },
+      select: {
+        listingState: true,
+        saleStatus: true,
+        rentalStatus: true,
+        isFeatured: true,
+        featuredAt: true,
+        lastVerifiedAt: true,
+        updatedAt: true,
+      },
     });
     expect(after).toEqual(before);
 
@@ -126,7 +142,15 @@ describe("purchase inquiry integration", () => {
 
     const before = await client().vehicle.findUniqueOrThrow({
       where: { id: vehicle.id },
-      select: { listingState: true, saleStatus: true, updatedAt: true },
+      select: {
+        listingState: true,
+        saleStatus: true,
+        rentalStatus: true,
+        isFeatured: true,
+        featuredAt: true,
+        lastVerifiedAt: true,
+        updatedAt: true,
+      },
     });
 
     const response = await handler(
@@ -163,7 +187,15 @@ describe("purchase inquiry integration", () => {
     // Vehicle listing state, sale status, and updatedAt are untouched.
     const after = await client().vehicle.findUniqueOrThrow({
       where: { id: vehicle.id },
-      select: { listingState: true, saleStatus: true, updatedAt: true },
+      select: {
+        listingState: true,
+        saleStatus: true,
+        rentalStatus: true,
+        isFeatured: true,
+        featuredAt: true,
+        lastVerifiedAt: true,
+        updatedAt: true,
+      },
     });
     expect(after).toEqual(before);
   });

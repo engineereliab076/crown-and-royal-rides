@@ -56,7 +56,7 @@ interface VehicleIdentity {
   readonly year: number;
 }
 
-interface GalleryState {
+export interface GalleryState {
   readonly images: readonly GalleryImage[];
   readonly updatedAt: string;
 }
@@ -65,6 +65,7 @@ interface Props {
   readonly vehicleId: string;
   readonly vehicle: VehicleIdentity;
   readonly initialGallery: GalleryState;
+  readonly onGalleryChanged?: () => void | Promise<void>;
 }
 
 const ACCEPT = VEHICLE_IMAGE_ALLOWED_TYPES.join(",");
@@ -88,6 +89,7 @@ export function VehicleGalleryManager({
   vehicleId,
   vehicle,
   initialGallery,
+  onGalleryChanged,
 }: Props) {
   const [gallery, setGallery] = useState<GalleryState>(initialGallery);
   const [queue, dispatch] = useReducer(uploadReducer, [] as QueuedUpload[]);
@@ -137,7 +139,8 @@ export function VehicleGalleryManager({
     if (!response.ok) return;
     const body = (await response.json()) as { gallery: GalleryState };
     setGallery(body.gallery);
-  }, [vehicleId]);
+    await onGalleryChanged?.();
+  }, [onGalleryChanged, vehicleId]);
 
   const startFile = useCallback(
     async (id: string) => {
@@ -308,6 +311,7 @@ export function VehicleGalleryManager({
         const body = (await response.json()) as { gallery: GalleryState };
         setGallery(body.gallery);
         setConflict(null);
+        await onGalleryChanged?.();
       } catch {
         setGallery(snapshot);
         setNotice("The order could not be saved.");
@@ -315,7 +319,7 @@ export function VehicleGalleryManager({
         setPending(null);
       }
     },
-    [refetchGallery, vehicleId],
+    [onGalleryChanged, refetchGallery, vehicleId],
   );
 
   const onDragEnd = useCallback(
@@ -368,11 +372,12 @@ export function VehicleGalleryManager({
         const body = (await response.json()) as { gallery: GalleryState };
         setGallery(body.gallery);
         setConflict(null);
+        await onGalleryChanged?.();
       } finally {
         setPending(null);
       }
     },
-    [refetchGallery, vehicleId],
+    [onGalleryChanged, refetchGallery, vehicleId],
   );
 
   const onEditAlt = useCallback(
@@ -423,11 +428,12 @@ export function VehicleGalleryManager({
         }
         const body = (await response.json()) as { gallery: GalleryState };
         setGallery(body.gallery);
+        await onGalleryChanged?.();
       } finally {
         setPending(null);
       }
     },
-    [vehicleId],
+    [onGalleryChanged, vehicleId],
   );
 
   const busy = pending !== null;
@@ -484,10 +490,12 @@ export function VehicleGalleryManager({
               className="flex items-center gap-3 rounded-lg border bg-card p-3"
             >
               {previewRef.current.get(item.id) ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={previewRef.current.get(item.id)}
+                <Image
+                  src={previewRef.current.get(item.id)!}
                   alt=""
+                  width={56}
+                  height={56}
+                  unoptimized
                   className="h-14 w-14 rounded object-cover"
                 />
               ) : null}

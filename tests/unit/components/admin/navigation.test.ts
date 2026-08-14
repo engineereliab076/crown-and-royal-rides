@@ -17,6 +17,7 @@ describe("admin navigation", () => {
     ).toEqual([
       "Dashboard",
       "Vehicles",
+      "Brands",
       "Inquiries",
       "Users",
       "Audit Log",
@@ -29,7 +30,7 @@ describe("admin navigation", () => {
       getAdminNavigation({ id: OWNER_ID, role: AdminRole.manager }).map(
         ({ label }) => label,
       ),
-    ).toEqual(["Dashboard", "Vehicles", "Inquiries"]);
+    ).toEqual(["Dashboard", "Vehicles", "Brands", "Inquiries"]);
   });
 
   it("provides one centralized source for mobile and desktop navigation", () => {

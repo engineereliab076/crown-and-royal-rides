@@ -17,6 +17,11 @@ import {
   type AuditContext,
 } from "@/server/modules/audit-log/context";
 import { createPrismaAuditLogRepository } from "@/server/modules/audit-log/repository";
+import { createPrismaBrandRepository } from "@/server/modules/brands/repository";
+import {
+  createBrandService,
+  type BrandService,
+} from "@/server/modules/brands/service";
 import {
   type AuditLogService,
   createAuditLogService,
@@ -46,6 +51,7 @@ export interface AdminServices {
   readonly administratorService: AdministratorService;
   readonly auditLogService: AuditLogService;
   readonly settingsService: SettingsService;
+  readonly brandService: BrandService;
   readonly vehicleService: VehicleService;
   readonly vehicleImageService: VehicleImageService;
   readonly inquiryService: InquiryService;
@@ -113,6 +119,13 @@ function build(): AdminServices {
   const vehicleRepository = createPrismaVehicleRepository(prisma);
   const vehicleService = createVehicleService({
     repository: vehicleRepository,
+    transaction: async (operation, options) =>
+      runInTransaction(
+        async (tx) =>
+          operation({ vehicles: createPrismaVehicleRepository(tx) }),
+        options,
+        prisma,
+      ),
     revalidateVehicle,
     reportCacheFailure: async (context) => {
       try {
@@ -128,6 +141,19 @@ function build(): AdminServices {
       } catch {}
     },
   });
+  const brandService = createBrandService({
+    repository: createPrismaBrandRepository(prisma),
+    transaction: async (operation, options) =>
+      runInTransaction(
+        async (tx) =>
+          operation({
+            brands: createPrismaBrandRepository(tx),
+            auditLog: createPrismaAuditLogRepository(tx),
+          }),
+        options,
+        prisma,
+      ),
+  });
   const vehicleImageService = getVehicleImageService();
   const inquiryService = createInquiryService({
     repository: createPrismaInquiryRepository(prisma),
@@ -137,6 +163,7 @@ function build(): AdminServices {
     administratorService,
     auditLogService,
     settingsService,
+    brandService,
     vehicleService,
     vehicleImageService,
     inquiryService,

@@ -10,10 +10,14 @@ import { defineConfig, devices } from "@playwright/test";
 
 const isCI = Boolean(process.env.CI);
 const runDatabaseE2E = process.env.RUN_DATABASE_E2E === "true";
-// Guarded, disposable-database E2E specs (Phase 3 inquiry + Phase 4 gallery).
-const databaseE2ESpec = /(?:purchase-inquiry|vehicle-gallery)\.spec\.ts$/;
+// Guarded, disposable-database E2E specs (Phase 3 inquiry, Phase 4 gallery,
+// and Phase 5 vehicle administration).
+const databaseE2ESpec =
+  /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin)\.spec\.ts$/;
 const explicitlyRequestedDatabaseE2E = process.argv.some((argument) =>
-  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery)\.spec\.ts$/.test(argument),
+  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin)\.spec\.ts$/.test(
+    argument,
+  ),
 );
 
 if (explicitlyRequestedDatabaseE2E && !runDatabaseE2E) {

@@ -10,7 +10,7 @@ import {
 import { createTestPrismaClient } from "../support/test-prisma";
 
 /**
- * Proves the committed migrations 0001–0004 apply cleanly, in order, to a
+ * Proves the committed migrations 0001–0005 apply cleanly, in order, to a
  * genuinely empty database. The suite resets the `public` schema first so the
  * "started empty" assertions are real, not an artifact of a previous run.
  */
@@ -30,10 +30,12 @@ const EXPECTED_ENUMS = [
   "admin_role",
   "body_type",
   "driver_option",
+  "drivetrain",
   "fuel_type",
   "inquiry_status",
   "inquiry_type",
   "listing_state",
+  "rental_status",
   "sale_status",
   "transmission",
   "vehicle_condition",
@@ -44,6 +46,7 @@ const EXPECTED_MIGRATIONS = [
   "0002_vehicles",
   "0003_vehicle_images",
   "0004_inquiries",
+  "0005_vehicle_admin_workflow",
 ] as const;
 
 interface NameRow {
@@ -91,7 +94,7 @@ async function extensionInstalled(
   return rows.length === 1;
 }
 
-describe("0001–0004 migrations", () => {
+describe("0001–0005 migrations", () => {
   let config: TestDatabaseConfig;
   let client: PrismaClient;
 
@@ -116,7 +119,7 @@ describe("0001–0004 migrations", () => {
     // 2. Apply committed migrations (deploy — never db push / migrate reset).
     await runMigrateDeploy(config);
 
-    // 3. Migration history records 0001–0004, in order, all successfully applied.
+    // 3. Migration history records 0001–0005, in order, all successfully applied.
     const migrations = await client.$queryRawUnsafe<MigrationRow[]>(
       `SELECT migration_name, finished_at, rolled_back_at
        FROM "_prisma_migrations" ORDER BY started_at`,
@@ -135,7 +138,7 @@ describe("0001–0004 migrations", () => {
     expect(tables).toEqual([...EXPECTED_TABLES]);
     expect(tables).not.toContain("rental_packages");
 
-    // 5. Exactly the ten enums.
+    // 5. Exactly the twelve enums.
     expect(await listEnums(client)).toEqual([...EXPECTED_ENUMS]);
 
     // 6. Both required extensions are enabled by the migrations.

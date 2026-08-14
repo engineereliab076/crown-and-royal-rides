@@ -44,4 +44,16 @@ describe("Prisma settings repository", () => {
     });
     expect(update.mock.calls[0]?.[0].select).not.toHaveProperty("id");
   });
+
+  it("uses a separate public select without notification or audit fields", async () => {
+    const findUnique = vi.fn().mockResolvedValue(null);
+    const repository = createPrismaSettingsRepository({
+      businessSettings: { findUnique },
+    } as unknown as SettingsPrismaClient);
+    await repository.findPublicSingleton();
+    const select = findUnique.mock.calls[0]?.[0].select;
+    expect(select).not.toHaveProperty("inquiryNotificationEmails");
+    expect(select).not.toHaveProperty("updatedAt");
+    expect(select).not.toHaveProperty("updatedById");
+  });
 });

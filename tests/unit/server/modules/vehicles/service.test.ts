@@ -46,6 +46,27 @@ function record(
     isForSale: true,
     saleStatus: "available",
     salePrice: BigInt(150_000_000),
+    isForRent: false,
+    rentalStatus: null,
+    rentalDailyPrice: null,
+    minRentalDays: null,
+    isNegotiable: false,
+    registrationNumber: null,
+    chassisNumber: null,
+    location: "Dar es Salaam",
+    driverNote: null,
+    mileageKm: 50_000,
+    engineCc: null,
+    engineDescription: null,
+    seats: 5,
+    doors: null,
+    exteriorColor: "Black",
+    interiorColor: null,
+    drivetrain: "awd",
+    features: [],
+    isFeatured: false,
+    featuredAt: null,
+    lastVerifiedAt: null,
     description: VALID.description,
     publishedAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -77,6 +98,16 @@ function fakeRepository(overrides: Partial<VehicleRepository> = {}) {
       .fn()
       .mockResolvedValue(record({ listingState: "published" })),
     getPublicationCandidate: vi.fn().mockResolvedValue(record()),
+    updateDraft: vi.fn().mockResolvedValue(record()),
+    updateListingState: vi.fn().mockResolvedValue(record()),
+    updateSaleStatus: vi.fn().mockResolvedValue(record()),
+    updateRentalStatus: vi.fn().mockResolvedValue(record()),
+    setFeatured: vi.fn().mockResolvedValue(record()),
+    markVerified: vi.fn().mockResolvedValue(record()),
+    countFeatured: vi.fn().mockResolvedValue(0),
+    lockVehicle: vi.fn().mockResolvedValue(true),
+    lockFeaturedSet: vi.fn().mockResolvedValue(undefined),
+    listFeaturedPublic: vi.fn().mockResolvedValue([]),
     findImageByPublicId: vi.fn().mockResolvedValue(null),
     createCover: vi.fn().mockResolvedValue(record()),
     publish: vi
@@ -202,7 +233,7 @@ describe("vehicle service", () => {
   });
 
   it.each([
-    ["no image", {}, ["coverImage"]],
+    ["no image", {}, ["image", "coverImage", "imageAltText"]],
     [
       "no cover",
       {
@@ -215,7 +246,7 @@ describe("vehicle service", () => {
           },
         ],
       },
-      ["coverImage"],
+      ["coverImage", "imageAltText"],
     ],
     [
       "short description",
@@ -230,7 +261,7 @@ describe("vehicle service", () => {
         ],
         description: "Too short",
       },
-      ["description"],
+      ["description", "imageAltText"],
     ],
     [
       "invalid sale mode",
@@ -247,7 +278,7 @@ describe("vehicle service", () => {
         saleStatus: null,
         salePrice: null,
       },
-      ["saleMode", "salePrice"],
+      ["imageAltText", "commercialMode"],
     ],
   ])(
     "rejects publication with %s and does not mutate",

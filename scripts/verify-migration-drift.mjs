@@ -1,19 +1,28 @@
 // Migration drift verification for Crown and Royal Rides.
 //
-// Prisma's schema language cannot express the two reviewed raw-SQL constructs in
-// 0001_foundation (the `citext` extension and the `business_settings_singleton_
-// check` CHECK constraint), so a naive `migrate diff` is blind to them. This
-// script therefore performs TWO complementary checks against a disposable
-// scratch database — never the application database:
+// Prisma's schema language cannot express several reviewed raw-SQL constructs in
+// the migrations (extensions, arbitrary CHECK constraints, STORED generated
+// columns, GIN/pg_trgm indexes, a partial unique index, and a DEFERRABLE unique
+// constraint), so a naive `migrate diff` is blind to them. This script therefore
+// performs TWO complementary checks against a disposable scratch database —
+// never the application database:
 //
 //   1. Prisma-representable parity: `migrate diff --from-migrations --to-schema
 //      --exit-code` must report an empty diff. This catches any Prisma-level
 //      schema change that is not reflected in the committed migrations.
 //
 //   2. Intentional-custom-SQL presence: replay the committed migrations into the
-//      scratch database and assert, at the catalog level, that citext and the
-//      named CHECK constraint actually exist — so drift in the reviewed raw SQL
-//      cannot pass unnoticed.
+//      scratch database and assert, at the catalog level, that every reviewed
+//      raw construct actually exists — so drift in the reviewed raw SQL cannot
+//      pass unnoticed:
+//        0001 — citext extension; business_settings_singleton_check;
+//               inquiry_notification_emails NOT NULL.
+//        0002 — pg_trgm extension; the STORED generated columns search_text /
+//               search_vector; the GIN full-text and pg_trgm indexes; the five
+//               vehicle sale/year CHECK constraints.
+//        0003 — the partial one-cover-per-vehicle unique index; the DEFERRABLE
+//               unique (vehicle_id, sort_order) constraint.
+//        0004 — the three inquiry subject/type CHECK constraints.
 //
 // A safe URL check refuses to run against anything that is not clearly a
 // disposable test/scratch database. No URL, host, or credential is ever printed.
@@ -167,11 +176,111 @@ async function main() {
         "business_settings.inquiry_notification_emails is nullable but must be NOT NULL.",
       );
     }
+
+    // ── Phase 3 (0002–0004) reviewed raw SQL ────────────────────────────────
+
+    // pg_trgm extension (0002), required by the trigram search index.
+    const pgTrgm = await verifyClient.query(
+      "SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'",
+    );
+    if (pgTrgm.rowCount !== 1) {
+      fail("the pg_trgm extension is missing after replaying migrations.");
+    }
+
+    // The nine Phase 3 CHECK constraints (invisible to `migrate diff`).
+    const EXPECTED_CHECKS = [
+      "vehicles_sale_price_positive_check",
+      "vehicles_sale_status_required_check",
+      "vehicles_sale_price_required_check",
+      "vehicles_sale_disabled_null_check",
+      "vehicles_year_range_check",
+      "inquiries_subject_exclusive_check",
+      "inquiries_purchase_fields_check",
+      "inquiries_viewing_fields_check",
+    ];
+    const checks = await verifyClient.query(
+      `SELECT conname FROM pg_constraint
+       WHERE contype = 'c' AND conname = ANY($1::text[])`,
+      [EXPECTED_CHECKS],
+    );
+    const foundChecks = new Set(checks.rows.map((row) => row.conname));
+    const missingChecks = EXPECTED_CHECKS.filter(
+      (name) => !foundChecks.has(name),
+    );
+    if (missingChecks.length > 0) {
+      fail(`missing Phase 3 CHECK constraint(s): ${missingChecks.join(", ")}.`);
+    }
+
+    // STORED generated columns (0002): search_text and search_vector must both
+    // be GENERATED ALWAYS, not plain columns.
+    const generated = await verifyClient.query(
+      `SELECT column_name, is_generated FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'vehicles'
+         AND column_name IN ('search_text', 'search_vector')`,
+    );
+    const generatedByName = new Map(
+      generated.rows.map((row) => [row.column_name, row.is_generated]),
+    );
+    if (
+      generatedByName.get("search_text") !== "ALWAYS" ||
+      generatedByName.get("search_vector") !== "ALWAYS"
+    ) {
+      fail(
+        "vehicles.search_text/search_vector are not both STORED generated columns.",
+      );
+    }
+
+    // GIN full-text + pg_trgm indexes (0002).
+    const searchIndexes = await verifyClient.query(
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE tablename = 'vehicles'
+         AND indexname IN ('vehicles_search_vector_idx', 'vehicles_search_text_trgm_idx')`,
+    );
+    const indexByName = new Map(
+      searchIndexes.rows.map((row) => [row.indexname, row.indexdef]),
+    );
+    if (
+      !/USING gin/i.test(indexByName.get("vehicles_search_vector_idx") ?? "")
+    ) {
+      fail("vehicles_search_vector_idx is missing or is not a GIN index.");
+    }
+    const trgmDef = indexByName.get("vehicles_search_text_trgm_idx") ?? "";
+    if (!/USING gin/i.test(trgmDef) || !/gin_trgm_ops/i.test(trgmDef)) {
+      fail(
+        "vehicles_search_text_trgm_idx is missing or is not a GIN pg_trgm index.",
+      );
+    }
+
+    // Partial one-cover-per-vehicle unique index (0003): unique + a WHERE
+    // predicate on is_cover.
+    const coverIndex = await verifyClient.query(
+      `SELECT indexdef FROM pg_indexes
+       WHERE indexname = 'vehicle_images_one_cover_per_vehicle_idx'`,
+    );
+    const coverDef = coverIndex.rows[0]?.indexdef ?? "";
+    if (!/UNIQUE/i.test(coverDef) || !/WHERE .*is_cover/i.test(coverDef)) {
+      fail(
+        "the partial one-cover-per-vehicle unique index is missing or not partial.",
+      );
+    }
+
+    // DEFERRABLE unique (vehicle_id, sort_order) constraint (0003).
+    const deferrable = await verifyClient.query(
+      `SELECT condeferrable FROM pg_constraint
+       WHERE conname = 'vehicle_images_vehicle_id_sort_order_key' AND contype = 'u'`,
+    );
+    if (deferrable.rows[0]?.condeferrable !== true) {
+      fail(
+        "vehicle_images_vehicle_id_sort_order_key is missing or not DEFERRABLE.",
+      );
+    }
   } finally {
     await verifyClient.end();
   }
   console.log(
-    "✓ Intentional raw SQL present (citext + singleton check + inquiry_notification_emails NOT NULL).",
+    "✓ Intentional raw SQL present (0001 citext/singleton/NOT NULL; 0002 pg_trgm,\n" +
+      "  generated columns, GIN + pg_trgm indexes, sale/year CHECKs; 0003 partial\n" +
+      "  cover index + DEFERRABLE ordering; 0004 inquiry subject/type CHECKs).",
   );
   console.log("✔ Migration drift check passed.");
 }

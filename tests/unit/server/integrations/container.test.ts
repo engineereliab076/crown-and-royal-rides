@@ -53,6 +53,18 @@ function fakeDependencies(): IntegrationContainerDependencies {
     cloudinary: {
       sign: vi.fn(() => "0".repeat(40)),
       destroy: vi.fn(async () => ({ result: "ok" })),
+      resource: vi.fn(async () => ({
+        public_id: "dev/vehicles/vehicle/id/asset-id",
+        version: 1,
+        secure_url:
+          "https://res.cloudinary.com/demo-cloud/image/upload/dev/vehicles/vehicle/id/asset-id.jpg",
+        width: 1600,
+        height: 900,
+        bytes: 1000,
+        format: "jpg",
+        resource_type: "image",
+        created_at: "2026-01-01T00:00:00.000Z",
+      })),
       url: vi.fn(
         (publicId) =>
           `https://res.cloudinary.com/demo-cloud/image/upload/${publicId}`,

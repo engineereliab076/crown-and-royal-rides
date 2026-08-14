@@ -4,27 +4,27 @@ export interface CreateUploadSignatureInput {
   readonly ownerId: string;
 }
 
-export type SignedUploadParameter = string | number;
-
 export interface UploadSignature {
   readonly uploadUrl: string;
+  readonly apiKey: string;
   readonly publicId: string;
+  readonly uploadPublicId: string;
+  readonly folder: string;
+  readonly resourceType: "image";
+  readonly allowedFormats: readonly string[];
+  readonly maxBytes: number;
+  readonly maxWidth: number;
+  readonly maxHeight: number;
+  readonly transformation: string;
   readonly timestamp: number;
   readonly expiresAt: number;
   readonly signature: string;
-  readonly signedParameters: Readonly<Record<string, SignedUploadParameter>>;
 }
 
 export interface UploadResult {
   readonly publicId: string;
   /** Provider asset version used when verifying the upload response signature. */
   readonly version: number;
-  readonly secureUrl: string;
-  readonly width: number;
-  readonly height: number;
-  readonly bytes: number;
-  readonly format: string;
-  readonly resourceType: string;
   readonly signature: string;
 }
 
@@ -35,6 +35,8 @@ export interface VerifiedAsset {
   readonly height: number;
   readonly bytes: number;
   readonly format: string;
+  readonly resourceType: "image";
+  readonly createdAt: string;
 }
 
 export type DeleteOutcome =

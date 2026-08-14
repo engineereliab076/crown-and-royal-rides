@@ -1,10 +1,22 @@
-// Crown and Royal Rides — Prisma schema (Phase 1, Group 1: foundation).
+// Crown and Royal Rides — Prisma schema.
 //
-// This schema defines ONLY the genuinely shared foundation tables. Feature
-// tables (vehicles, vehicle images, inquiries, packages, contact events,
-// package/vehicle joins) are intentionally absent and arrive in later phases:
-// vehicles in Phase 3, inquiry request fields in Phase 8, rental packages in
-// Phase 9. See docs/runbook.md → "Database migrations".
+// Phase 1 (0001_foundation) defines the genuinely shared foundation tables.
+// Phase 3, Group 1 adds the vehicle catalogue foundation: vehicles, vehicle
+// images, and the inquiry foundation (0002_vehicles, 0003_vehicle_images,
+// 0004_inquiries). Rental packages remain deferred to Phase 9 and are NOT
+// created here; `inquiries.package_id` is a bare nullable placeholder column
+// (no foreign key) that exists only so the subject-exclusivity CHECK can be
+// written now, before the packages table exists. See docs/runbook.md →
+// "Database migrations".
+//
+// Several Phase 3 database constructs cannot be expressed in this schema and
+// live as reviewed raw SQL in the migrations, asserted at the catalog level by
+// `db:migrate:verify`: the `pg_trgm` extension; the STORED generated columns
+// `vehicles.search_text` / `vehicles.search_vector` (declared below only as
+// opaque `Unsupported` columns so the column set matches — the generation
+// expression, the GIN full-text index, and the pg_trgm index are raw SQL);
+// every CHECK constraint; the partial unique cover index on `vehicle_images`;
+// and the DEFERRABLE unique `(vehicle_id, sort_order)` constraint.
 //
 // Database identifiers are snake_case (enforced with @map / @@map); Prisma model
 // and field identifiers stay idiomatic PascalCase/camelCase.
@@ -42,6 +54,85 @@ enum ListingState {
   archived
 
   @@map("listing_state")
+}
+
+/// Vehicle body style. Values are the exact snake_case database labels.
+enum BodyType {
+  sedan
+  suv
+  hatchback
+  coupe
+  wagon
+  pickup
+  van
+  convertible
+
+  @@map("body_type")
+}
+
+/// Vehicle condition. `foreign_used` is an ex-import unit; `locally_used` is a
+/// previously-registered local unit — the standard Tanzanian market split.
+enum VehicleCondition {
+  brand_new
+  foreign_used
+  locally_used
+
+  @@map("vehicle_condition")
+}
+
+/// Gearbox type.
+enum Transmission {
+  automatic
+  manual
+
+  @@map("transmission")
+}
+
+/// Fuel/energy source.
+enum FuelType {
+  petrol
+  diesel
+  hybrid
+  electric
+
+  @@map("fuel_type")
+}
+
+/// Whether the vehicle is offered with a driver or for self-drive.
+enum DriverOption {
+  with_driver
+  without_driver
+
+  @@map("driver_option")
+}
+
+/// Commercial availability of a vehicle offered for sale. Only meaningful when
+/// the sale mode is enabled (`is_for_sale = true`); enforced by CHECK.
+enum SaleStatus {
+  available
+  reserved
+  sold
+
+  @@map("sale_status")
+}
+
+/// The kind of request a customer submits. Phase 3 supports buying (`purchase`)
+/// and booking a viewing (`viewing`); later phases extend inquiry handling.
+enum InquiryType {
+  purchase
+  viewing
+
+  @@map("inquiry_type")
+}
+
+/// Initial inquiry workflow states. Only the documented Phase 3 values exist;
+/// richer lifecycle states arrive with later phases as additive changes.
+enum InquiryStatus {
+  new
+  in_progress
+  closed
+
+  @@map("inquiry_status")
 }
 
 // ── Models ───────────────────────────────────────────────────────────────────
@@ -102,6 +193,8 @@ model Brand {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  vehicles Vehicle[]
+
   @@map("brands")
 }
 
@@ -141,4 +234,144 @@ model MediaDeletionQueue {
   lastAttemptedAt DateTime? @map("last_attempted_at") @db.Timestamptz(6)
 
   @@map("media_deletion_queue")
+}
+
+/// Vehicle catalogue entry (Phase 3, `0002_vehicles`).
+///
+/// `brandName` is denormalized from `brands.name` at creation so a listing keeps
+/// a stable display/search value independent of later brand edits; the live
+/// `brand` relation is still authoritative for the brand identity. Exactly the
+/// minimal single commercial mode is modeled here — sale — as `isForSale`,
+/// `saleStatus`, and `salePrice` (a PostgreSQL `bigint`). Rental packages,
+/// featured ranking, full specifications, and private identifiers belong to
+/// later phases and are intentionally absent.
+///
+/// Constructs kept as reviewed raw SQL (not representable in this schema, see the
+/// migration header and `db:migrate:verify`): the `pg_trgm` extension; the STORED
+/// generated columns `search_text` and `search_vector` (declared here only as
+/// opaque `Unsupported` columns); the GIN full-text and pg_trgm indexes; and all
+/// CHECK constraints (positive sale price, sale-mode field requirements, and the
+/// bounded `year`).
+model Vehicle {
+  id           String                   @id @default(uuid()) @db.Uuid
+  brandId      String                   @map("brand_id") @db.Uuid
+  brandName    String                   @map("brand_name")
+  model        String
+  slug         String                   @unique
+  year         Int
+  bodyType     BodyType                 @map("body_type")
+  condition    VehicleCondition
+  transmission Transmission
+  fuelType     FuelType                 @map("fuel_type")
+  driverOption DriverOption             @map("driver_option")
+  listingState ListingState             @default(draft) @map("listing_state")
+  isForSale    Boolean                  @default(false) @map("is_for_sale")
+  saleStatus   SaleStatus?              @map("sale_status")
+  salePrice    BigInt?                  @map("sale_price")
+  description  String?
+  publishedAt  DateTime?                @map("published_at") @db.Timestamptz(6)
+  // STORED generated columns maintained by 0002_vehicles. PostgreSQL recomputes
+  // them on every write; `@default(dbgenerated(...))` is exactly how Prisma
+  // introspects a STORED generated column, so schema and migration agree and
+  // `migrate diff` reports no drift. The GENERATED clause, the GIN full-text and
+  // pg_trgm indexes, and the pg_trgm extension are reviewed raw SQL in the
+  // migration. Application code must never write these columns.
+  searchText   String?                  @default(dbgenerated("((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text))")) @map("search_text")
+  searchVector Unsupported("tsvector")? @default(dbgenerated("to_tsvector('english'::regconfig, ((((brand_name || ' '::text) || model) || ' '::text) || COALESCE(description, ''::text)))")) @map("search_vector")
+  createdAt    DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // A vehicle must belong to a real brand; Restrict prevents deleting a brand
+  // that still has vehicles (the denormalized brandName is for display/search,
+  // not a substitute for the relation).
+  brand     Brand          @relation(fields: [brandId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  images    VehicleImage[]
+  inquiries Inquiry[]
+
+  @@index([brandId], map: "vehicles_brand_id_idx")
+  @@index([listingState], map: "vehicles_listing_state_idx")
+  // GIN indexes over the generated columns (raw SQL creates them; Prisma can
+  // represent GIN + operator classes, so they are declared here to stay drift-
+  // free). gin_trgm_ops needs the pg_trgm extension, created by the migration.
+  @@index([searchText(ops: raw("gin_trgm_ops"))], map: "vehicles_search_text_trgm_idx", type: Gin)
+  @@index([searchVector], type: Gin)
+  @@map("vehicles")
+}
+
+/// Cloudinary-backed image for a vehicle (Phase 3, `0003_vehicle_images`).
+///
+/// `publicId` is the provider public identifier and `secureUrl` the delivered
+/// HTTPS URL; `width`/`height`/`format`/`byteSize` capture the verified asset
+/// metadata. Two invariants cannot be expressed here and live as reviewed raw
+/// SQL (asserted by `db:migrate:verify`): a PARTIAL unique index allowing at
+/// most one `isCover = true` row per vehicle, and a DEFERRABLE unique constraint
+/// on `(vehicle_id, sort_order)` so a whole-set reorder can run in one
+/// transaction. Deleting a vehicle cascades to its image rows.
+model VehicleImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  vehicleId String   @map("vehicle_id") @db.Uuid
+  publicId  String   @map("public_id")
+  secureUrl String   @map("secure_url")
+  width     Int
+  height    Int
+  format    String
+  byteSize  Int      @map("byte_size")
+  altText   String?  @map("alt_text")
+  sortOrder Int      @map("sort_order")
+  isCover   Boolean  @default(false) @map("is_cover")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  // The DEFERRABLE unique on (vehicle_id, sort_order) is created as a raw-SQL
+  // constraint in 0003 (Prisma cannot express DEFERRABLE); declared here as a
+  // plain @@unique so `migrate diff` matches it (deferring is tolerated). The
+  // partial one-cover-per-vehicle unique index is raw-only and deliberately NOT
+  // declared here — expressing it as a field @unique would make Prisma infer a
+  // 1:1 vehicle↔image relation. Its presence is proven by db:migrate:verify.
+  @@unique([vehicleId, sortOrder])
+  @@index([vehicleId], map: "vehicle_images_vehicle_id_idx")
+  @@map("vehicle_images")
+}
+
+/// Customer inquiry foundation (Phase 3, `0004_inquiries`).
+///
+/// Supports the two Phase 3 request kinds: `purchase` (buy a vehicle) and
+/// `viewing` (book a vehicle viewing). A single subject is referenced through
+/// exactly one of `vehicleId` or `packageId`; `packageId` is a bare nullable
+/// placeholder column with NO foreign key because rental packages do not exist
+/// until Phase 9 — it exists only so the subject-exclusivity CHECK can be
+/// authored now. `subjectSnapshot` stores a structured JSON copy of the subject
+/// at submission time. `vehicleId` is nullable because a package-subject inquiry
+/// leaves it NULL (the other subject) — NOT so it can be nulled on delete: the
+/// vehicle foreign key is ON DELETE RESTRICT, because a subject-exclusivity CHECK
+/// requires every inquiry to keep exactly one subject, and nulling a vehicle
+/// inquiry's subject would violate it. A vehicle with inquiries therefore cannot
+/// be hard-deleted (archive it instead); the snapshot keeps the requested detail.
+///
+/// CHECK constraints (reviewed raw SQL, asserted by `db:migrate:verify`): exactly
+/// one subject; purchase requires a vehicle subject and forbids viewing-only
+/// fields; viewing requires its viewing-specific field.
+model Inquiry {
+  id                 String        @id @default(uuid()) @db.Uuid
+  reference          String        @unique
+  type               InquiryType
+  status             InquiryStatus @default(new)
+  vehicleId          String?       @map("vehicle_id") @db.Uuid
+  packageId          String?       @map("package_id") @db.Uuid
+  subjectSnapshot    Json          @map("subject_snapshot") @db.JsonB
+  customerName       String        @map("customer_name")
+  customerPhone      String        @map("customer_phone")
+  customerEmail      String?       @map("customer_email")
+  message            String?
+  preferredViewingAt DateTime?     @map("preferred_viewing_at") @db.Timestamptz(6)
+  createdAt          DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([vehicleId], map: "inquiries_vehicle_id_idx")
+  @@index([type], map: "inquiries_type_idx")
+  @@index([status], map: "inquiries_status_idx")
+  @@map("inquiries")
 }

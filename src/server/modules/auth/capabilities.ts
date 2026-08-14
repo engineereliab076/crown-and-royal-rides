@@ -60,7 +60,13 @@ export function hasCapability(
   actor: AuthenticatedActor,
   capability: Capability,
 ): boolean {
-  return ROLE_CAPABILITIES[actor.role].includes(capability);
+  // The type guarantees a generated role internally, while the defensive
+  // lookup keeps malformed/session-boundary data fail-closed at runtime.
+  return (
+    (ROLE_CAPABILITIES as Partial<Record<AdminRole, readonly Capability[]>>)[
+      actor.role
+    ]?.includes(capability) ?? false
+  );
 }
 
 /**

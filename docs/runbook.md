@@ -358,14 +358,167 @@ builds, and is git-ignored.
 **Ownership and phasing.** Migrations are feature-owned: each feature brings its
 own migration when it is built.
 
-- Phase 1 (this migration, `0001_foundation`) creates only the genuinely shared
-  foundation tables and enums: `admin_users`, `admin_audit_log`, `brands`,
+- Phase 1 (`0001_foundation`) creates only the genuinely shared foundation
+  tables and enums: `admin_users`, `admin_audit_log`, `brands`,
   `business_settings`, `media_deletion_queue`, plus the `admin_role` and
   `listing_state` enums. `listing_state` is created now because later feature
   tables share it.
-- Vehicles arrive in Phase 3.
-- Inquiry request fields arrive in Phase 8.
-- Rental packages arrive in Phase 9.
+- Phase 3, Group 1 (`0002_vehicles`, `0003_vehicle_images`, `0004_inquiries`)
+  adds the vehicle catalogue foundation. See "Phase 3 migrations" below.
+- Inquiry request fields (beyond the Phase 3 foundation) arrive in Phase 8.
+- Rental packages arrive in Phase 9. They are **not** created in Phase 3;
+  `inquiries.package_id` is a bare nullable placeholder column with no foreign
+  key so the subject-exclusivity CHECK can exist before the packages table does.
+
+### Phase 3 migrations (0002–0004)
+
+These three additive migrations are **feature-owned by Phase 3** and, like
+`0001`, are **frozen once applied to any shared environment** — never rewrite an
+applied/shared migration; every later change is a new, additive migration.
+
+- **`0002_vehicles`** — the `vehicles` table and its six enums (`body_type`,
+  `vehicle_condition`, `transmission`, `fuel_type`, `driver_option`,
+  `sale_status`). It models exactly one commercial mode (sale) via `is_for_sale`,
+  `sale_status`, and a `bigint` `sale_price`. Reuses the shared `listing_state`
+  for publication. Reviewed raw SQL: the `pg_trgm` extension; the STORED
+  generated columns `search_text` (trigram source) and `search_vector`
+  (full-text `tsvector`, `'english'`); a GIN full-text index and a GIN pg_trgm
+  index over them; and five named CHECK constraints
+  (`vehicles_sale_price_positive_check`, `vehicles_sale_status_required_check`,
+  `vehicles_sale_price_required_check`, `vehicles_sale_disabled_null_check`,
+  `vehicles_year_range_check`). `brand_id` is `ON DELETE RESTRICT`.
+- **`0003_vehicle_images`** — the `vehicle_images` table (Cloudinary
+  `public_id`/`secure_url` plus verified `width`/`height`/`format`/`byte_size`,
+  `alt_text`, `sort_order`, `is_cover`). Reviewed raw SQL: a **partial** unique
+  index `vehicle_images_one_cover_per_vehicle_idx` (`WHERE is_cover = true`,
+  at most one cover per vehicle) and a **DEFERRABLE** unique constraint
+  `vehicle_images_vehicle_id_sort_order_key` on `(vehicle_id, sort_order)` so a
+  whole-gallery reorder can run in one transaction. `vehicle_id` is
+  `ON DELETE CASCADE`.
+- **`0004_inquiries`** — the `inquiries` foundation and its `inquiry_type`
+  (`purchase`, `viewing`) and `inquiry_status` (`new`, `in_progress`, `closed`)
+  enums, with a JSON `subject_snapshot`. Reviewed raw SQL: three named CHECK
+  constraints — `inquiries_subject_exclusive_check` (exactly one of vehicle /
+  package), `inquiries_purchase_fields_check` (purchase ⇒ vehicle subject and no
+  viewing-only field), `inquiries_viewing_fields_check` (viewing ⇒ its viewing
+  field). `vehicle_id` is `ON DELETE RESTRICT` — nulling a vehicle inquiry's
+  subject would violate the exclusivity CHECK, so a vehicle with inquiries cannot
+  be hard-deleted (archive it via `listing_state` instead).
+
+**How Prisma-invisible constructs stay drift-free.** `schema.prisma` mirrors each
+construct in the form Prisma introspects it, so `migrate diff` sees no drift:
+STORED generated columns are declared with `@default(dbgenerated("…"))`; the GIN
+indexes as `@@index(…, type: Gin)`; the deferrable unique as a plain `@@unique`
+(deferring is tolerated). CHECK constraints and the partial cover index are
+invisible to `migrate diff` and are kept raw-only (the partial index is
+deliberately **not** a field `@unique`, which would make Prisma infer a bogus 1:1
+vehicle↔image relation). Every one of these is asserted at the catalog level by
+`db:migrate:verify`.
+
+**Reviewer checklist for the Phase 3 raw SQL** (in addition to the general
+"Raw-SQL migration review checklist" below):
+
+- **CHECK constraints** — every constraint has a stable name; `NULL` semantics are
+  understood (the `is_for_sale` / `type` columns referenced by the CHECKs are
+  `NOT NULL`, so no CHECK can pass by evaluating to `NULL`); each invariant has a
+  failing-insert test asserting SQLSTATE `23514` and the constraint name.
+- **Generated columns** — the expression is `IMMUTABLE` and reproducible
+  (`to_tsvector('english', …)` two-arg form; `||`/`COALESCE`); the schema mirror
+  uses `@default(dbgenerated("…"))`; a test proves auto-population and recompute.
+- **Partial index** — the `WHERE is_cover = true` predicate is exact and
+  documented; kept raw-only (never a field `@unique`); a test proves at most one
+  cover per vehicle.
+- **Deferrable constraint** — declared `DEFERRABLE INITIALLY IMMEDIATE`; a test
+  proves both immediate rejection of duplicates and a successful whole-gallery
+  swap inside a `SET CONSTRAINTS ALL DEFERRED` transaction.
+
+**Verifying these migrations locally (disposable databases only).** Use the
+throwaway Docker PostgreSQL and clearly-named `*_test` / `*_scratch` databases —
+never Neon (see "Configuring a local test database" for full setup and the
+`POSTGRES_PORT` caveat when host port 5432 is occupied by a native PostgreSQL):
+
+```bash
+# 1. Migration drift + catalog assertions (scratch DB).
+export SHADOW_DATABASE_URL="postgresql://USER:PW@localhost:PORT/crown_royal_rides_scratch?schema=public"
+pnpm db:migrate:verify
+
+# 2. Constraint / search / relation integration tests (test DB).
+export TEST_DATABASE_URL="postgresql://USER:PW@localhost:PORT/crown_royal_rides_test?schema=public"
+export TEST_DIRECT_DATABASE_URL="$TEST_DATABASE_URL"
+export ALLOW_TEST_DATABASE_DESTRUCTIVE_OPERATIONS=true
+pnpm test:integration
+```
+
+### Phase 3, Group 2 vehicle management
+
+Vehicle creation is available to authenticated administrators with
+`content:manage`. The service validates the strict client shape, resolves the
+selected brand, copies its trimmed display name into `vehicles.brand_name`, and
+creates a draft. The copy is intentional: the listing keeps a stable display and
+search value if the live brand is renamed later, while `brand_id` remains the
+authoritative identity and foreign key.
+
+Slugs use `createVehicleSlug(brand, model, year, shortId)`. The short identifier
+comes from Node's cryptographically secure random generator. Creation makes at
+most three total attempts and retries only a Prisma `P2002` unique violation
+that specifically identifies the Vehicle `slug`; unrelated database failures
+propagate unchanged, while exhausted collisions become the safe
+`VEHICLE_SLUG_CONFLICT` response.
+
+Publishing is service-authoritative and requires a cover image, enabled sale
+mode with a status, a positive sale price, and a trimmed description of at least
+40 characters. A failed gate performs no update and returns
+`VEHICLE_NOT_READY` with only safe missing-requirement names. A successful
+publish atomically sets `listing_state = published` and `published_at`; repeating
+the operation is idempotent.
+
+Repository money remains PostgreSQL/Prisma `bigint`. Explicit DTO mappers call
+`toShillings` so every outward `salePrice` is `number | null` and the DTO is JSON
+serializable; never install a global BigInt JSON patch. Repository projections
+and DTOs are allow-lists and exclude generated search fields and future private
+fields.
+
+Group 2 deliberately did not implement image upload or attachment,
+Cloudinary signing, a public vehicle detail page/API, inquiries, WhatsApp, or
+email notifications. Those remain Group 3/4 work.
+
+### Phase 3, Group 3 cover upload and public detail
+
+The administrator cover flow uses a signed direct upload. A same-origin,
+authenticated `media:manage` request identifies only the vehicle; the server
+confirms the actor also has `content:manage`, confirms that the vehicle exists
+and has no cover, and derives the controlled
+`<CLOUDINARY_FOLDER_PREFIX>/vehicles/vehicle/<vehicle-id>` folder. Authorization
+is short-lived, image-only, overwrite-disabled, and limited to JPEG, PNG, and
+WebP. The browser accepts one file, enforces the advertised 10 MB limit for
+immediate feedback, uploads directly over HTTPS, and returns only the completed
+`publicId`, `version`, and response `signature` to the application.
+
+Completion metadata is never trusted from the browser. The Cloudinary adapter
+authenticates the direct-upload response signature over `public_id + version`,
+then uses Cloudinary's authenticated Admin API to inspect the resource. Only the
+inspected HTTPS delivery URL, format, dimensions, byte size, resource type, and
+creation timestamp are trusted. The adapter rejects the wrong namespace/account,
+non-images, unsupported formats, non-positive or greater-than-6000 dimensions,
+and files over 10 MB. No raw provider response or credential crosses the media
+abstraction.
+
+Group 3 attaches exactly one image as `sort_order = 0` and `is_cover = true`;
+the partial database uniqueness constraint remains the race-condition defense.
+There is no gallery, reorder, replace, or delete UI. If verification succeeds
+but attachment fails, cleanup first proves no image row references the public ID
+and then attempts provider deletion. Cleanup is best effort; an inconclusive
+database check never authorizes deletion, and cleanup failure is reported with
+safe operation-only context without replacing the original application error.
+
+Successful first publication commits `published`/`publishedAt` before invalidating
+the stable `vehicle:<slug>` cache tag. Failed and idempotent-repeat publication
+do not invalidate. Cache failure cannot roll back a committed publication and is
+reported safely. `/cars/[slug]` is a Server Component backed by the public DTO,
+an ISR window, and the same tag; drafts and missing slugs render Next.js 404.
+
+Inquiry submission, WhatsApp actions, email notifications, and the rest of
+Group 4 remain deliberately unimplemented.
 
 **Working with migrations during development.**
 
@@ -511,10 +664,17 @@ never touches the application database:
 
 1. **Prisma-representable parity** — `migrate diff --from-migrations --to-schema
 --exit-code` must report an empty diff.
-2. **Intentional raw SQL presence** — after replaying migrations it asserts the
-   `citext` extension and the `business_settings_singleton_check` constraint
-   exist, so drift in the reviewed custom SQL (which Prisma's diff cannot see)
-   cannot pass unnoticed.
+2. **Intentional raw SQL presence** — after replaying migrations it asserts every
+   reviewed custom construct exists at the catalog level, so drift in the raw SQL
+   (which Prisma's diff cannot see) cannot pass unnoticed:
+   - **0001** — `citext` extension; `business_settings_singleton_check`;
+     `inquiry_notification_emails` NOT NULL.
+   - **0002** — `pg_trgm` extension; `search_text`/`search_vector` are STORED
+     generated columns; the GIN full-text and GIN pg_trgm indexes; the five
+     vehicle sale/year CHECK constraints.
+   - **0003** — the partial one-cover-per-vehicle unique index; the DEFERRABLE
+     `(vehicle_id, sort_order)` unique constraint.
+   - **0004** — the three inquiry subject/type CHECK constraints.
 
 ### Harness behavior
 
@@ -730,6 +890,59 @@ Dated results — **2026-08-10** (local Node 26.2.0, pnpm 11.9.0):
 | Remote CI — `e2e` job              | Passed                                           |
 | Docker (static compose validation) | Valid                                            |
 | Docker (runtime)                   | Blocked — daemon not running                     |
+
+## Phase 3 Group 4 — purchase inquiries
+
+The public purchase endpoint follows one fixed sequence: strict request
+validation, trusted proxy-IP extraction, consuming IP and normalized-phone rate
+limits, published/available vehicle lookup, immutable snapshot construction,
+and committed inquiry creation. Only after a `201` response has been constructed
+is the email task registered with Next.js `after()`. Email is never sent from a
+repository, service transaction, or before the inquiry commit.
+
+Purchase references use `CRR-XXXXXXXX`, where each `X` is one of the uppercase
+unambiguous characters `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`. Eight characters are
+drawn with Node's cryptographic random source. A collision is retried at most
+three times, and only the inquiry-reference unique constraint is retryable.
+
+The fixed-window purchase policy is 10 submissions per IP and 5 per normalized
+Tanzanian phone number in 15 minutes. Both dimensions are consuming checks.
+Their raw values are HMAC-SHA-256 protected with `IP_HASH_SECRET` before reaching
+the limiter; raw IPs, phone numbers, HMAC inputs, and limiter keys are never
+logged. The endpoint fails closed: real exhaustion is `429`, while provider or
+configuration failure is `503` with safe diagnostic codes only.
+
+Notification recipients and the business WhatsApp number come from the
+singleton `BusinessSettings` row. Empty recipients deliberately skip email and
+do not fail the saved inquiry. Rejected, throwing, or timed-out email delivery
+also cannot change the response or stored row; the error reporter receives only
+the correlation ID, inquiry reference, stable stage, and fixed operation name.
+The send timeout is 2.5 seconds inside the post-response task.
+
+The purchase form opens `about:blank` synchronously in the submit gesture,
+retains the window handle, and severs `opener` before any external navigation.
+This is necessary because opening WhatsApp only after awaiting `fetch` is blocked
+by mobile browsers, while including `noopener` in `window.open` may cause
+Chromium/WebKit to return no usable handle. A blocked popup never blocks saving:
+the current page still shows the reference. Missing/invalid WhatsApp settings
+close the blank window and leave the saved confirmation visible.
+
+The guarded vertical slice is `tests/e2e/purchase-inquiry.spec.ts`. It runs only
+when `RUN_DATABASE_E2E=true`, `TEST_DATABASE_URL` and
+`TEST_DIRECT_DATABASE_URL` identify a local disposable `test`/`scratch`
+database, and `ALLOW_TEST_DATABASE_DESTRUCTIVE_OPERATIONS=true`. The web server
+is bound to that test URL, workers are forced to one, identifiers are unique,
+and the spec cleans only its exact rows. It runs on desktop Chromium and iPhone
+13/WebKit; Pixel 5 skips this stateful scenario. The upload path uses the real
+Group 3 UI plus an in-process `InMemoryMediaStorage`, Playwright interception of
+the fake upload/attachment transport, and direct guarded test-DB verification.
+`wa.me` and fake media delivery are intercepted, so no live provider is called.
+No test-only application endpoint or production secret is added.
+
+Group 4 intentionally stops at purchase submission, WhatsApp handoff, and the
+minimal read-only administrator list. Viewing, rental-package and general
+contact inquiries, inquiry detail/edit/status mutation, advanced filters,
+catalogue search, and further media work remain out of scope.
 
 ## Troubleshooting
 

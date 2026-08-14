@@ -3,7 +3,6 @@ import type {
   CreateUploadSignatureInput,
   DeleteOutcome,
   MediaTransform,
-  SignedUploadParameter,
   UploadResult,
   UploadSignature,
   VerifiedAsset,
@@ -14,6 +13,17 @@ export interface InMemoryMediaStorageOptions {
   readonly signatureTtlMs?: number;
   readonly uploadBaseUrl?: string;
   readonly deliveryBaseUrl?: string;
+  readonly deleteFails?: boolean;
+}
+
+export interface InMemoryRegisteredUpload extends UploadResult {
+  readonly secureUrl: string;
+  readonly width: number;
+  readonly height: number;
+  readonly bytes: number;
+  readonly format: string;
+  readonly resourceType: string;
+  readonly createdAt?: string;
 }
 
 export type MediaStorageOperation =
@@ -22,7 +32,7 @@ export type MediaStorageOperation =
   | Readonly<{
       type: "assetDeleted";
       publicId: string;
-      outcome: "deleted" | "alreadyMissing";
+      outcome: "deleted" | "alreadyMissing" | "failed";
     }>
   | Readonly<{ type: "deliveryUrlBuilt"; publicId: string; url: string }>;
 
@@ -31,6 +41,9 @@ const DEFAULT_UPLOAD_BASE_URL = "https://uploads.test.invalid/direct";
 const DEFAULT_DELIVERY_BASE_URL = "https://media.test.invalid/assets";
 const FORMAT_PATTERN = /^[a-z0-9]+$/;
 const FIT_MODES = new Set(["cover", "contain", "fill", "fit", "scale"]);
+const ALLOWED_FORMATS = ["jpg", "jpeg", "png", "webp"] as const;
+const MAX_BYTES = 10 * 1024 * 1024;
+const MAX_DIMENSION = 6000;
 
 function nonEmpty(value: string, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -84,7 +97,9 @@ function secureUrl(value: string): string {
   return normalized;
 }
 
-function normalizeUploadResult(result: UploadResult): UploadResult {
+function normalizeRegisteredUpload(
+  result: InMemoryRegisteredUpload,
+): InMemoryRegisteredUpload {
   if (typeof result !== "object" || result === null) {
     throw new TypeError("Upload result must be an object.");
   }
@@ -107,10 +122,11 @@ function normalizeUploadResult(result: UploadResult): UploadResult {
     format: normalizedFormat(result.format),
     resourceType,
     signature: nonEmpty(result.signature, "signature"),
+    createdAt: result.createdAt ?? "2026-01-01T00:00:00.000Z",
   });
 }
 
-function toVerifiedAsset(result: UploadResult): VerifiedAsset {
+function toVerifiedAsset(result: InMemoryRegisteredUpload): VerifiedAsset {
   return Object.freeze({
     publicId: result.publicId,
     url: result.secureUrl,
@@ -118,6 +134,8 @@ function toVerifiedAsset(result: UploadResult): VerifiedAsset {
     height: result.height,
     bytes: result.bytes,
     format: result.format,
+    resourceType: "image",
+    createdAt: result.createdAt ?? "2026-01-01T00:00:00.000Z",
   });
 }
 
@@ -125,16 +143,13 @@ function copyAsset(asset: VerifiedAsset): VerifiedAsset {
   return Object.freeze({ ...asset });
 }
 
-function sameUploadResult(left: UploadResult, right: UploadResult): boolean {
+function sameUploadResult(
+  left: InMemoryRegisteredUpload,
+  right: UploadResult,
+): boolean {
   return (
     left.publicId === right.publicId &&
     left.version === right.version &&
-    left.secureUrl === right.secureUrl &&
-    left.width === right.width &&
-    left.height === right.height &&
-    left.bytes === right.bytes &&
-    left.format === right.format &&
-    left.resourceType === right.resourceType &&
     left.signature === right.signature
   );
 }
@@ -188,10 +203,11 @@ export class InMemoryMediaStorage implements MediaStorage {
   readonly #signatureTtlMs: number;
   readonly #uploadBaseUrl: string;
   readonly #deliveryBaseUrl: string;
-  readonly #expectedUploads = new Map<string, UploadResult>();
+  readonly #expectedUploads = new Map<string, InMemoryRegisteredUpload>();
   readonly #assets = new Map<string, VerifiedAsset>();
   readonly #operations: MediaStorageOperation[] = [];
   #nextSignatureId = 1;
+  readonly #deleteFails: boolean;
 
   constructor(options: InMemoryMediaStorageOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -207,6 +223,7 @@ export class InMemoryMediaStorage implements MediaStorage {
       options.deliveryBaseUrl ?? DEFAULT_DELIVERY_BASE_URL,
       "deliveryBaseUrl",
     ).replace(/\/$/, "");
+    this.#deleteFails = options.deleteFails ?? false;
   }
 
   async createUploadSignature(
@@ -227,15 +244,21 @@ export class InMemoryMediaStorage implements MediaStorage {
     const sequence = this.#nextSignatureId++;
     const publicId = `${folder}/${ownerType}/${ownerId}/asset-${sequence}`;
     const signature = `test-signature-${sequence}`;
-    const signedParameters: Readonly<Record<string, SignedUploadParameter>> =
-      Object.freeze({ publicId, timestamp });
     const result = Object.freeze({
       uploadUrl: this.#uploadBaseUrl,
+      apiKey: "public-test-api-key",
       publicId,
+      uploadPublicId: `asset-${sequence}`,
+      folder: `${folder}/${ownerType}/${ownerId}`,
+      resourceType: "image" as const,
+      allowedFormats: ALLOWED_FORMATS,
+      maxBytes: MAX_BYTES,
+      maxWidth: MAX_DIMENSION,
+      maxHeight: MAX_DIMENSION,
+      transformation: "c_limit,w_6000,h_6000",
       timestamp,
       expiresAt,
       signature,
-      signedParameters,
     });
 
     this.#operations.push(
@@ -244,20 +267,41 @@ export class InMemoryMediaStorage implements MediaStorage {
     return result;
   }
 
-  registerExpectedUpload(result: UploadResult): void {
-    const normalized = normalizeUploadResult(result);
+  registerExpectedUpload(result: InMemoryRegisteredUpload): void {
+    const normalized = normalizeRegisteredUpload(result);
     this.#expectedUploads.set(normalized.publicId, normalized);
   }
 
   async verifyUploadResult(result: UploadResult): Promise<VerifiedAsset> {
-    const normalized = normalizeUploadResult(result);
+    if (typeof result !== "object" || result === null) {
+      throw new TypeError("Upload result must be an object.");
+    }
+    const normalized = Object.freeze({
+      publicId: nonEmpty(result.publicId, "publicId"),
+      version: positiveSafeInteger(result.version, "version"),
+      signature: nonEmpty(result.signature, "signature"),
+    });
     const expected = this.#expectedUploads.get(normalized.publicId);
 
     if (expected === undefined || !sameUploadResult(expected, normalized)) {
       throw new TypeError("Upload result could not be verified.");
     }
 
-    const asset = toVerifiedAsset(normalized);
+    if (
+      !ALLOWED_FORMATS.includes(
+        expected.format as (typeof ALLOWED_FORMATS)[number],
+      )
+    ) {
+      throw new TypeError("format must be an approved image format.");
+    }
+    if (expected.width > MAX_DIMENSION || expected.height > MAX_DIMENSION) {
+      throw new RangeError("Image dimensions exceed the allowed maximum.");
+    }
+    if (expected.bytes > MAX_BYTES) {
+      throw new RangeError("Image file size exceeds the allowed maximum.");
+    }
+
+    const asset = toVerifiedAsset(expected);
     this.#assets.set(asset.publicId, asset);
     this.#operations.push(
       Object.freeze({ type: "uploadVerified", publicId: asset.publicId }),
@@ -267,6 +311,19 @@ export class InMemoryMediaStorage implements MediaStorage {
 
   async deleteAsset(publicId: string): Promise<DeleteOutcome> {
     const normalized = nonEmpty(publicId, "publicId");
+    if (this.#deleteFails) {
+      this.#operations.push(
+        Object.freeze({
+          type: "assetDeleted",
+          publicId: normalized,
+          outcome: "failed",
+        }),
+      );
+      return Object.freeze({
+        status: "failed",
+        reason: "Media provider could not delete the asset.",
+      });
+    }
     const deleted = this.#assets.delete(normalized);
     const status = deleted ? "deleted" : "alreadyMissing";
     const outcome = Object.freeze({ status });

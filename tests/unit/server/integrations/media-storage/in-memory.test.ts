@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { InMemoryMediaStorage } from "@/server/integrations/media-storage/in-memory";
+import type { InMemoryRegisteredUpload } from "@/server/integrations/media-storage/in-memory";
 import type {
   UploadResult,
   UploadSignature,
 } from "@/server/integrations/media-storage/types";
 import { runMediaStorageContract } from "./contract";
 
-function resultFor(signature: UploadSignature): UploadResult {
+function resultFor(signature: UploadSignature): InMemoryRegisteredUpload {
   return {
     publicId: signature.publicId,
     version: 1_700_000_000,
@@ -18,6 +19,7 @@ function resultFor(signature: UploadSignature): UploadResult {
     format: "JPG",
     resourceType: "image",
     signature: signature.signature,
+    createdAt: "2026-01-01T00:00:00.000Z",
   };
 }
 
@@ -25,10 +27,26 @@ runMediaStorageContract("InMemoryMediaStorage", () => {
   const storage = new InMemoryMediaStorage({ now: () => 1_000 });
   return {
     storage,
-    arrangeValidUpload(signature: UploadSignature): UploadResult {
+    arrangeValidUpload(signature: UploadSignature) {
       const result = resultFor(signature);
       storage.registerExpectedUpload(result);
-      return result;
+      return {
+        completed: {
+          publicId: result.publicId,
+          version: result.version,
+          signature: result.signature,
+        },
+        expected: {
+          publicId: result.publicId,
+          url: result.secureUrl,
+          width: result.width,
+          height: result.height,
+          bytes: result.bytes,
+          format: "jpg",
+          resourceType: "image" as const,
+          createdAt: result.createdAt as string,
+        },
+      };
     },
   };
 });
@@ -69,12 +87,17 @@ describe("InMemoryMediaStorage inspection behavior", () => {
     });
     const valid = resultFor(signature);
 
-    await expect(storage.verifyUploadResult(valid)).rejects.toThrow(
+    const completed: UploadResult = {
+      publicId: valid.publicId,
+      version: valid.version,
+      signature: valid.signature,
+    };
+    await expect(storage.verifyUploadResult(completed)).rejects.toThrow(
       "Upload result could not be verified.",
     );
     storage.registerExpectedUpload(valid);
     await expect(
-      storage.verifyUploadResult({ ...valid, bytes: valid.bytes + 1 }),
+      storage.verifyUploadResult({ ...completed, signature: "tampered" }),
     ).rejects.toThrow("Upload result could not be verified.");
   });
 
@@ -93,9 +116,9 @@ describe("InMemoryMediaStorage inspection behavior", () => {
       ownerId: "one",
     });
 
-    await expect(
-      storage.verifyUploadResult({ ...resultFor(signature), ...change }),
-    ).rejects.toThrow(errorType);
+    expect(() =>
+      storage.registerExpectedUpload({ ...resultFor(signature), ...change }),
+    ).toThrow(errorType);
   });
 
   it("returns frozen asset snapshots that cannot change internal state", async () => {
@@ -107,7 +130,11 @@ describe("InMemoryMediaStorage inspection behavior", () => {
     });
     const result = resultFor(signature);
     storage.registerExpectedUpload(result);
-    await storage.verifyUploadResult(result);
+    await storage.verifyUploadResult({
+      publicId: result.publicId,
+      version: result.version,
+      signature: result.signature,
+    });
 
     const assets = storage.getAssets();
     expect(Object.isFrozen(assets)).toBe(true);
@@ -141,13 +168,23 @@ describe("InMemoryMediaStorage inspection behavior", () => {
     });
     const result = resultFor(signature);
     storage.registerExpectedUpload(result);
-    await storage.verifyUploadResult(result);
+    await storage.verifyUploadResult({
+      publicId: result.publicId,
+      version: result.version,
+      signature: result.signature,
+    });
 
     storage.reset();
 
     expect(storage.getAssets()).toEqual([]);
     expect(storage.getOperations()).toEqual([]);
-    await expect(storage.verifyUploadResult(result)).rejects.toThrow(TypeError);
+    await expect(
+      storage.verifyUploadResult({
+        publicId: result.publicId,
+        version: result.version,
+        signature: result.signature,
+      }),
+    ).rejects.toThrow(TypeError);
     await expect(
       storage.createUploadSignature({
         folder: "vehicles",

@@ -30,6 +30,7 @@ function fakeSign(
 interface FakeCloudinary extends CloudinaryFacade {
   readonly sign: ReturnType<typeof vi.fn<CloudinaryFacade["sign"]>>;
   readonly destroy: ReturnType<typeof vi.fn<CloudinaryFacade["destroy"]>>;
+  readonly resource: ReturnType<typeof vi.fn<CloudinaryFacade["resource"]>>;
   readonly url: ReturnType<typeof vi.fn<CloudinaryFacade["url"]>>;
 }
 
@@ -37,6 +38,7 @@ function createFacade(): FakeCloudinary {
   return {
     sign: vi.fn(fakeSign),
     destroy: vi.fn(async () => ({ result: "ok" })),
+    resource: vi.fn(),
     url: vi.fn((publicId, options) => {
       const transformation =
         options.format ?? options.fetch_format ?? "original";
@@ -66,13 +68,27 @@ function resultFor(signature: UploadSignature): UploadResult {
   return {
     publicId: signature.publicId,
     version,
-    secureUrl: `https://res.cloudinary.com/demo-cloud/image/upload/v${version}/${signature.publicId}.jpg`,
+    signature: fakeSign({ public_id: signature.publicId, version }, API_SECRET),
+  };
+}
+
+function resourceFor(
+  signature: UploadSignature,
+  overrides: Record<string, unknown> = {},
+) {
+  const version = 1_700_000_001;
+  return {
+    public_id: signature.publicId,
+    version,
+    secure_url: `https://res.cloudinary.com/demo-cloud/image/upload/v${version}/${signature.publicId}.jpg`,
     width: 1600,
     height: 900,
     bytes: 245_000,
     format: "JPG",
-    resourceType: "image",
-    signature: fakeSign({ public_id: signature.publicId, version }, API_SECRET),
+    resource_type: "image",
+    type: "upload",
+    created_at: "2023-11-14T22:13:21.000Z",
+    ...overrides,
   };
 }
 
@@ -84,7 +100,22 @@ runMediaStorageContract("CloudinaryMediaStorage", () => {
   return {
     storage: createStorage(client),
     deliveryPublicId: "dev/vehicles/example",
-    arrangeValidUpload: resultFor,
+    arrangeValidUpload(signature) {
+      client.resource.mockResolvedValue(resourceFor(signature));
+      return {
+        completed: resultFor(signature),
+        expected: {
+          publicId: signature.publicId,
+          url: resourceFor(signature).secure_url,
+          width: 1600,
+          height: 900,
+          bytes: 245_000,
+          format: "jpg",
+          resourceType: "image" as const,
+          createdAt: "2023-11-14T22:13:21.000Z",
+        },
+      };
+    },
   };
 });
 
@@ -108,10 +139,14 @@ describe("CloudinaryMediaStorage provider mapping", () => {
     );
     expect(client.sign).toHaveBeenCalledWith(
       {
-        allowed_formats: "jpg,jpeg,png,webp,avif",
+        allowed_formats: "jpg,jpeg,png,webp",
+        folder: expect.stringMatching(
+          /^dev\/vehicle-images\/vehicle\/vehicle-123$/,
+        ),
         overwrite: "false",
-        public_id: signature.publicId,
+        public_id: expect.stringMatching(/^asset-/),
         timestamp: 1_700_000_000,
+        transformation: "c_limit,w_6000,h_6000",
         type: "upload",
       },
       API_SECRET,
@@ -141,6 +176,7 @@ describe("CloudinaryMediaStorage provider mapping", () => {
       ownerId: "one",
     });
     client.sign.mockClear();
+    client.resource.mockResolvedValue(resourceFor(uploadSignature));
 
     await storage.verifyUploadResult(resultFor(uploadSignature));
 
@@ -148,33 +184,57 @@ describe("CloudinaryMediaStorage provider mapping", () => {
       { public_id: uploadSignature.publicId, version: 1_700_000_001 },
       API_SECRET,
     );
+    expect(client.resource).toHaveBeenCalledWith(
+      uploadSignature.publicId,
+      expect.objectContaining({ resource_type: "image", type: "upload" }),
+    );
   });
 
   it.each([
-    [{ signature: "" }, TypeError],
-    [{ signature: "0".repeat(40) }, TypeError],
-    [{ publicId: "prod/vehicles/vehicle/one/asset-id" }, TypeError],
     [{ width: 0 }, RangeError],
-    [{ bytes: -1 }, RangeError],
+    [{ height: 6001 }, RangeError],
+    [{ bytes: 10 * 1024 * 1024 + 1 }, RangeError],
     [{ format: "svg" }, TypeError],
-    [{ secureUrl: "https://attacker.example/fake.jpg" }, TypeError],
+    [{ resource_type: "video" }, TypeError],
+    [{ created_at: "2023-11-14T21:00:00.000Z" }, TypeError],
+    [{ created_at: "2023-11-14T23:00:00.000Z" }, TypeError],
+    [{ secure_url: "https://attacker.example/fake.jpg" }, TypeError],
   ] as const)(
-    "rejects unsafe upload response %#",
+    "rejects unsafe inspected resource %#",
     async (change, errorType) => {
-      const storage = createStorage();
+      const client = createFacade();
+      const storage = createStorage(client);
       const signature = await storage.createUploadSignature({
         folder: "vehicles",
         ownerType: "vehicle",
         ownerId: "one",
       });
+      client.resource.mockResolvedValue(resourceFor(signature, change));
       await expect(
-        storage.verifyUploadResult({ ...resultFor(signature), ...change }),
+        storage.verifyUploadResult(resultFor(signature)),
       ).rejects.toThrow(errorType);
     },
   );
 
-  it("ignores unknown upload fields and leaves caller data unchanged", async () => {
+  it.each([
+    { signature: "" },
+    { signature: "0".repeat(40) },
+    { publicId: "prod/vehicles/vehicle/one/asset-id" },
+  ])("rejects tampered completion metadata %#", async (change) => {
     const storage = createStorage();
+    const signature = await storage.createUploadSignature({
+      folder: "vehicles",
+      ownerType: "vehicle",
+      ownerId: "one",
+    });
+    await expect(
+      storage.verifyUploadResult({ ...resultFor(signature), ...change }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("ignores unknown upload fields and leaves caller data unchanged", async () => {
+    const client = createFacade();
+    const storage = createStorage(client);
     const signature = await storage.createUploadSignature({
       folder: "vehicles",
       ownerType: "vehicle",
@@ -182,11 +242,35 @@ describe("CloudinaryMediaStorage provider mapping", () => {
     });
     const result = { ...resultFor(signature), futureProviderField: "ignored" };
     const snapshot = structuredClone(result);
+    client.resource.mockResolvedValue(resourceFor(signature));
 
     await expect(storage.verifyUploadResult(result)).resolves.toMatchObject({
       publicId: signature.publicId,
     });
     expect(result).toEqual(snapshot);
+  });
+
+  it("translates provider inspection failures without leaking provider details", async () => {
+    const client = createFacade();
+    const storage = createStorage(client);
+    const signature = await storage.createUploadSignature({
+      folder: "vehicles",
+      ownerType: "vehicle",
+      ownerId: "one",
+    });
+    client.resource.mockRejectedValue(new Error("provider response marker"));
+    try {
+      await storage.verifyUploadResult(resultFor(signature));
+      throw new Error("Expected verification to fail.");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "INTEGRATION_UNAVAILABLE",
+        message: "An external integration is temporarily unavailable.",
+      });
+      expect(
+        error instanceof Error ? error.message : String(error),
+      ).not.toContain("provider response marker");
+    }
   });
 
   it("requests image deletion with CDN invalidation and maps safe outcomes", async () => {

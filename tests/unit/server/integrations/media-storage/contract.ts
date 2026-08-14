@@ -4,12 +4,16 @@ import type { MediaStorage } from "@/server/integrations/media-storage/interface
 import type {
   UploadResult,
   UploadSignature,
+  VerifiedAsset,
 } from "@/server/integrations/media-storage/types";
 
 export interface MediaStorageContractHarness {
   readonly storage: MediaStorage;
   readonly deliveryPublicId?: string;
-  arrangeValidUpload(signature: UploadSignature): UploadResult;
+  arrangeValidUpload(signature: UploadSignature): {
+    readonly completed: UploadResult;
+    readonly expected: VerifiedAsset;
+  };
 }
 
 export function runMediaStorageContract(
@@ -29,10 +33,8 @@ export function runMediaStorageContract(
       expect(signature.publicId).toContain("vehicle-123");
       expect(signature.expiresAt).toBeGreaterThan(signature.timestamp);
       expect(signature.signature).not.toHaveLength(0);
-      expect(signature.signedParameters).toMatchObject({
-        publicId: signature.publicId,
-        timestamp: signature.timestamp,
-      });
+      expect(signature.uploadPublicId).toBeTruthy();
+      expect(signature.transformation).toBe("c_limit,w_6000,h_6000");
     });
 
     it.each(["folder", "ownerType", "ownerId"] as const)(
@@ -61,16 +63,9 @@ export function runMediaStorageContract(
       });
       const result = harness.arrangeValidUpload(signature);
 
-      await expect(harness.storage.verifyUploadResult(result)).resolves.toEqual(
-        {
-          publicId: signature.publicId,
-          url: result.secureUrl,
-          width: result.width,
-          height: result.height,
-          bytes: result.bytes,
-          format: "jpg",
-        },
-      );
+      await expect(
+        harness.storage.verifyUploadResult(result.completed),
+      ).resolves.toEqual(result.expected);
     });
 
     it("rejects non-image upload results", async () => {
@@ -81,11 +76,10 @@ export function runMediaStorageContract(
         ownerId: "vehicle-123",
       });
       const result = harness.arrangeValidUpload(signature);
-
       await expect(
         harness.storage.verifyUploadResult({
-          ...result,
-          resourceType: "video",
+          ...result.completed,
+          signature: "tampered-signature",
         }),
       ).rejects.toThrow(TypeError);
     });
@@ -98,7 +92,7 @@ export function runMediaStorageContract(
         ownerId: "vehicle-123",
       });
       await harness.storage.verifyUploadResult(
-        harness.arrangeValidUpload(signature),
+        harness.arrangeValidUpload(signature).completed,
       );
 
       await expect(

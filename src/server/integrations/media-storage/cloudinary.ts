@@ -11,7 +11,6 @@ import type {
   DeleteOutcome,
   MediaFitMode,
   MediaTransform,
-  SignedUploadParameter,
   UploadResult,
   UploadSignature,
   VerifiedAsset,
@@ -57,6 +56,16 @@ export interface CloudinaryFacade {
     publicId: string,
     options: CloudinaryDestroyOptions,
   ): Promise<Readonly<{ result?: unknown }>>;
+  resource(
+    publicId: string,
+    options: Readonly<{
+      cloud_name: string;
+      api_key: string;
+      api_secret: string;
+      resource_type: "image";
+      type: "upload";
+    }>,
+  ): Promise<unknown>;
   url(publicId: string, options: CloudinaryUrlOptions): string;
 }
 
@@ -67,7 +76,17 @@ export interface CloudinaryMediaStorageDependencies {
 }
 
 const DEFAULT_SIGNATURE_TTL_SECONDS = 5 * 60;
-const ALLOWED_FORMATS = new Set(["jpg", "jpeg", "png", "webp", "avif"]);
+const COMPLETED_UPLOAD_MAX_AGE_SECONDS = 15 * 60;
+export const VEHICLE_IMAGE_ALLOWED_FORMATS = [
+  "jpg",
+  "jpeg",
+  "png",
+  "webp",
+] as const;
+export const VEHICLE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const VEHICLE_IMAGE_MAX_WIDTH = 6000;
+export const VEHICLE_IMAGE_MAX_HEIGHT = 6000;
+const ALLOWED_FORMATS = new Set<string>(VEHICLE_IMAGE_ALLOWED_FORMATS);
 const SIGNATURE_PATTERN = /^[a-f0-9]{40}$/i;
 const SAFE_SEGMENT_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 const FIT_MAP: Readonly<Record<MediaFitMode, string>> = Object.freeze({
@@ -242,6 +261,11 @@ function defaultFacade(): CloudinaryFacade {
         publicId,
         options,
       ]) as Promise<Readonly<{ result?: unknown }>>,
+    resource: (publicId, options) =>
+      Reflect.apply(cloudinary.api.resource, cloudinary.api, [
+        publicId,
+        options,
+      ]) as Promise<unknown>,
     url: (publicId, options) => cloudinary.url(publicId, options),
   };
 }
@@ -301,11 +325,14 @@ export class CloudinaryMediaStorage implements MediaStorage {
       throw new RangeError("Upload signature expiry must be a safe timestamp.");
     }
     const publicId = `${this.#folderPrefix}/${folder}/${ownerType}/${ownerId}/asset-${assetId}`;
+    const controlledFolder = `${this.#folderPrefix}/${folder}/${ownerType}/${ownerId}`;
     const providerParameters = Object.freeze({
       allowed_formats: [...ALLOWED_FORMATS].join(","),
+      folder: controlledFolder,
       overwrite: "false",
-      public_id: publicId,
+      public_id: `asset-${assetId}`,
       timestamp,
+      transformation: `c_limit,w_${VEHICLE_IMAGE_MAX_WIDTH},h_${VEHICLE_IMAGE_MAX_HEIGHT}`,
       type: "upload",
     });
 
@@ -319,23 +346,21 @@ export class CloudinaryMediaStorage implements MediaStorage {
       throw new IntegrationUnavailableError();
     }
 
-    const signedParameters: Readonly<Record<string, SignedUploadParameter>> =
-      Object.freeze({
-        apiKey: this.#apiKey,
-        publicId,
-        timestamp,
-        resourceType: "image",
-        allowedFormats: providerParameters.allowed_formats,
-        overwrite: providerParameters.overwrite,
-        type: providerParameters.type,
-      });
     return Object.freeze({
       uploadUrl: `https://api.cloudinary.com/v1_1/${encodeURIComponent(this.#cloudName)}/image/upload`,
+      apiKey: this.#apiKey,
       publicId,
+      uploadPublicId: providerParameters.public_id,
+      folder: controlledFolder,
+      resourceType: "image",
+      allowedFormats: VEHICLE_IMAGE_ALLOWED_FORMATS,
+      maxBytes: VEHICLE_IMAGE_MAX_BYTES,
+      maxWidth: VEHICLE_IMAGE_MAX_WIDTH,
+      maxHeight: VEHICLE_IMAGE_MAX_HEIGHT,
+      transformation: providerParameters.transformation,
       timestamp,
       expiresAt,
       signature,
-      signedParameters,
     });
   }
 
@@ -345,13 +370,6 @@ export class CloudinaryMediaStorage implements MediaStorage {
     }
     const publicId = safePublicId(result.publicId, this.#folderPrefix);
     const version = positiveSafeInteger(result.version, "version");
-    const resourceType = required(
-      result.resourceType,
-      "resourceType",
-    ).toLowerCase();
-    if (resourceType !== "image") {
-      throw new TypeError("Only image upload results are supported.");
-    }
     const signature = required(result.signature, "signature");
     let expected: string;
     try {
@@ -366,13 +384,69 @@ export class CloudinaryMediaStorage implements MediaStorage {
       throw new TypeError("Upload result could not be verified.");
     }
 
+    let inspected: unknown;
+    try {
+      inspected = await this.#client.resource(publicId, {
+        cloud_name: this.#cloudName,
+        api_key: this.#apiKey,
+        api_secret: this.#apiSecret,
+        resource_type: "image",
+        type: "upload",
+      });
+    } catch (error) {
+      throw new IntegrationUnavailableError(error);
+    }
+    if (typeof inspected !== "object" || inspected === null) {
+      throw new IntegrationUnavailableError();
+    }
+    const resource = inspected as Record<string, unknown>;
+    if (resource.public_id !== publicId || resource.version !== version) {
+      throw new TypeError("Upload result could not be verified.");
+    }
+    if (
+      required(
+        String(resource.resource_type ?? ""),
+        "resourceType",
+      ).toLowerCase() !== "image"
+    ) {
+      throw new TypeError("Only image upload results are supported.");
+    }
+    if (resource.type !== "upload") {
+      throw new TypeError(
+        "Only ordinary uploaded image resources are supported.",
+      );
+    }
+    const width = positiveSafeInteger(resource.width as number, "width");
+    const height = positiveSafeInteger(resource.height as number, "height");
+    const bytes = positiveSafeInteger(resource.bytes as number, "bytes");
+    if (width > VEHICLE_IMAGE_MAX_WIDTH || height > VEHICLE_IMAGE_MAX_HEIGHT) {
+      throw new RangeError("Image dimensions exceed the allowed maximum.");
+    }
+    if (bytes > VEHICLE_IMAGE_MAX_BYTES) {
+      throw new RangeError("Image file size exceeds the allowed maximum.");
+    }
+    const createdAt = required(String(resource.created_at ?? ""), "createdAt");
+    const createdAtMilliseconds = Date.parse(createdAt);
+    const nowMilliseconds = this.#now();
+    if (
+      !Number.isFinite(createdAtMilliseconds) ||
+      !Number.isSafeInteger(nowMilliseconds) ||
+      createdAtMilliseconds > nowMilliseconds + 60_000 ||
+      nowMilliseconds - createdAtMilliseconds >
+        COMPLETED_UPLOAD_MAX_AGE_SECONDS * 1000
+    ) {
+      throw new TypeError("createdAt must be a valid timestamp.");
+    }
+
     return Object.freeze({
       publicId,
-      url: safeHttpsUrl(result.secureUrl, this.#cloudName),
-      width: positiveSafeInteger(result.width, "width"),
-      height: positiveSafeInteger(result.height, "height"),
-      bytes: positiveSafeInteger(result.bytes, "bytes"),
-      format: safeFormat(result.format),
+      url: safeHttpsUrl(String(resource.secure_url ?? ""), this.#cloudName),
+      width,
+      height,
+      bytes,
+      format: safeFormat(String(resource.format ?? "")),
+      resourceType: "image",
+      createdAt,
     });
   }
 

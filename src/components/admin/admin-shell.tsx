@@ -2,11 +2,13 @@
 
 import {
   ClipboardListIcon,
+  CarFrontIcon,
   CrownIcon,
   LayoutDashboardIcon,
   MenuIcon,
   SettingsIcon,
   UsersIcon,
+  MessageSquareTextIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -30,6 +32,8 @@ import { cn } from "@/lib/utils";
 
 const ICONS: Record<AdminNavigationIcon, typeof LayoutDashboardIcon> = {
   dashboard: LayoutDashboardIcon,
+  vehicles: CarFrontIcon,
+  inquiries: MessageSquareTextIcon,
   users: UsersIcon,
   audit: ClipboardListIcon,
   settings: SettingsIcon,

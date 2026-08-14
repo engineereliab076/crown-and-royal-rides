@@ -14,15 +14,22 @@ describe("admin navigation", () => {
       getAdminNavigation({ id: OWNER_ID, role: AdminRole.owner }).map(
         ({ label }) => label,
       ),
-    ).toEqual(["Dashboard", "Users", "Audit Log", "Settings"]);
+    ).toEqual([
+      "Dashboard",
+      "Vehicles",
+      "Inquiries",
+      "Users",
+      "Audit Log",
+      "Settings",
+    ]);
   });
 
-  it("shows managers only their permitted shell destination", () => {
+  it("shows managers their permitted content destination", () => {
     expect(
       getAdminNavigation({ id: OWNER_ID, role: AdminRole.manager }).map(
         ({ label }) => label,
       ),
-    ).toEqual(["Dashboard"]);
+    ).toEqual(["Dashboard", "Vehicles", "Inquiries"]);
   });
 
   it("provides one centralized source for mobile and desktop navigation", () => {

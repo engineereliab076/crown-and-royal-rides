@@ -44,20 +44,28 @@ function publicJson(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), { ...init, headers });
 }
 
-async function reportSettingsFailure(
+/**
+ * Emit at most one safe, PII-free diagnostic for a failed *post-commit* handoff
+ * step. Reporting is fully guarded: a missing or throwing reporter can never
+ * propagate, so this can be called from any post-commit path without risking the
+ * committed 201. The context carries only the correlation id and the opaque
+ * inquiry reference — never customer, snapshot, or provider data.
+ */
+async function reportPurchaseHandoffFailure(
   reporter: ErrorReporter,
   correlationId: string,
   reference: string,
+  stage: "settings-lookup" | "notification-schedule",
 ): Promise<void> {
   try {
     await reporter.captureMessage(
-      "Purchase inquiry settings lookup failed.",
+      "Purchase inquiry post-commit handoff step failed.",
       "warning",
       {
         correlationId,
         additional: {
           operation: "purchase-inquiry-handoff",
-          stage: "settings-lookup",
+          stage,
           inquiryReference: reference,
         },
       },
@@ -121,10 +129,14 @@ export function createPurchaseInquiryPost(
           }
         }
       } catch {
-        await reportSettingsFailure(
+        // Missing settings return null (handled above); a genuine load failure
+        // lands here. The inquiry stays committed, the WhatsApp handoff is
+        // absent, and recipients stay empty so no email is attempted.
+        await reportPurchaseHandoffFailure(
           errorReporter,
           execution.correlationId,
           submission.reference,
+          "settings-lookup",
         );
       }
 
@@ -137,14 +149,27 @@ export function createPurchaseInquiryPost(
         { status: 201 },
       );
 
-      schedulePurchaseInquiryNotification({
-        scheduleAfter: dependencies.scheduleAfter,
-        emailSender: dependencies.emailSender,
-        errorReporter,
-        recipients,
-        submission,
-        correlationId: execution.correlationId,
-      });
+      // The inquiry is already committed and the 201 is constructed. Scheduling
+      // optional post-response work must never replace that response: if the
+      // scheduler (`after()`) throws, the committed inquiry would otherwise
+      // surface a false 500. Guard it so no post-commit operation escapes.
+      try {
+        schedulePurchaseInquiryNotification({
+          scheduleAfter: dependencies.scheduleAfter,
+          emailSender: dependencies.emailSender,
+          errorReporter,
+          recipients,
+          submission,
+          correlationId: execution.correlationId,
+        });
+      } catch {
+        await reportPurchaseHandoffFailure(
+          errorReporter,
+          execution.correlationId,
+          submission.reference,
+          "notification-schedule",
+        );
+      }
       return response;
     },
     {

@@ -76,6 +76,8 @@ function harness(
     send?: ReturnType<typeof vi.fn>;
     errorReporter?: () => ErrorReporter;
     reporterReports?: InMemoryErrorReporter;
+    findSingleton?: ReturnType<typeof vi.fn>;
+    scheduleAfter?: (task: () => void | Promise<void>) => void;
   } = {},
 ) {
   const events: string[] = [];
@@ -112,10 +114,12 @@ function harness(
       listAdmin: vi.fn(),
     } as InquiryService,
     settingsRepository: {
-      findSingleton: vi.fn().mockResolvedValue({
-        whatsappNumber: "+255712345678",
-        inquiryNotificationEmails: ["inquiries@example.test"],
-      }),
+      findSingleton:
+        options.findSingleton ??
+        vi.fn().mockResolvedValue({
+          whatsappNumber: "+255712345678",
+          inquiryNotificationEmails: ["inquiries@example.test"],
+        }),
       updateSingleton: vi.fn(),
     } as never,
     rateLimiter: { check },
@@ -124,10 +128,12 @@ function harness(
     hashSecret: "a-safe-test-secret-that-is-at-least-32-characters",
     publicOrigin: "https://example.test",
     allowedOrigin: "http://localhost:3000",
-    scheduleAfter: (task) => {
-      events.push("scheduled");
-      tasks.push(task);
-    },
+    scheduleAfter:
+      options.scheduleAfter ??
+      ((task) => {
+        events.push("scheduled");
+        tasks.push(task);
+      }),
   });
   return { handler, check, submit, send, events, tasks, reporter };
 }
@@ -365,5 +371,158 @@ describe("POST /api/inquiries/purchase — lazy Sentry resolution", () => {
     }
     // The safe, non-identifying reference is still present for correlation.
     expect(serialized).toContain("CRR-ABCDEFGH");
+  });
+});
+
+describe("POST /api/inquiries/purchase — committed inquiry never 500s from optional post-commit work", () => {
+  it("treats an absent business_settings singleton as valid optional configuration", async () => {
+    const test = harness({
+      // Production shape: `findUnique` returns null when the id=1 row is absent.
+      findSingleton: vi.fn().mockResolvedValue(null),
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({
+      reference: "CRR-ABCDEFGH",
+      message: "Your purchase request has been saved.",
+      whatsappUrl: null, // WhatsApp handoff absent/disabled.
+    });
+    // Persisted exactly once; notification scheduled but with no recipients.
+    expect(test.submit).toHaveBeenCalledTimes(1);
+    expect(test.tasks).toHaveLength(1);
+    await test.tasks[0]?.();
+    expect(test.send).not.toHaveBeenCalled(); // No email attempted.
+    // No diagnostic emitted: an absent singleton is not a failure.
+    expect(test.reporter.getReports()).toHaveLength(0);
+  });
+
+  it("keeps the 201 when the settings repository throws after commit", async () => {
+    const test = harness({
+      findSingleton: vi.fn().mockRejectedValue(new Error("settings db down")),
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      reference: "CRR-ABCDEFGH",
+      whatsappUrl: null,
+    });
+    // Notification is scheduled but delivers nothing (recipients undetermined).
+    await test.tasks[0]?.();
+    expect(test.send).not.toHaveBeenCalled();
+    // Exactly one safe, PII-free diagnostic for the settings stage.
+    const messages = test.reporter
+      .getReports()
+      .filter((r) => r.type === "message");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      context: {
+        additional: {
+          operation: "purchase-inquiry-handoff",
+          stage: "settings-lookup",
+          inquiryReference: "CRR-ABCDEFGH",
+        },
+      },
+    });
+  });
+
+  it("keeps the 201 when scheduling the notification throws (e.g. after() unavailable)", async () => {
+    const test = harness({
+      scheduleAfter: () => {
+        throw new Error("after() unavailable in this runtime");
+      },
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      reference: "CRR-ABCDEFGH",
+    });
+    const messages = test.reporter
+      .getReports()
+      .filter((r) => r.type === "message");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      context: {
+        additional: {
+          operation: "purchase-inquiry-handoff",
+          stage: "notification-schedule",
+          inquiryReference: "CRR-ABCDEFGH",
+        },
+      },
+    });
+  });
+
+  it("keeps the 201 when the reporter itself throws during a post-commit failure", async () => {
+    const throwingReporter: ErrorReporter = {
+      captureException: vi.fn(() => {
+        throw new Error("reporter down");
+      }),
+      captureMessage: vi.fn(() => {
+        throw new Error("reporter down");
+      }),
+    };
+    const test = harness({
+      findSingleton: vi.fn().mockRejectedValue(new Error("settings db down")),
+      scheduleAfter: () => {
+        throw new Error("after() unavailable");
+      },
+      errorReporter: () => throwingReporter,
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    // Both the settings-load AND the scheduling failed, and every reporting
+    // attempt threw — yet the committed inquiry still returns its 201.
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      reference: "CRR-ABCDEFGH",
+      whatsappUrl: null,
+    });
+  });
+
+  it("does not return 201 or schedule notification when persistence fails", async () => {
+    const test = harness({
+      submit: vi.fn().mockRejectedValue(new Error("commit failed")),
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    expect(response.status).toBe(500);
+    expect(test.tasks).toHaveLength(0);
+    expect(test.send).not.toHaveBeenCalled();
+  });
+
+  it("INVARIANT: a committed inquiry can never 500 from any later optional operation", async () => {
+    // Every optional post-commit operation fails at once: settings load throws,
+    // WhatsApp enrichment is moot, scheduling throws, and the reporter throws.
+    const throwingReporter: ErrorReporter = {
+      captureException: vi.fn(() => {
+        throw new Error("reporter down");
+      }),
+      captureMessage: vi.fn(() => {
+        throw new Error("reporter down");
+      }),
+    };
+    const test = harness({
+      findSingleton: vi.fn().mockRejectedValue(new Error("settings down")),
+      scheduleAfter: () => {
+        throw new Error("after() down");
+      },
+      errorReporter: () => throwingReporter,
+    });
+
+    const response = await test.handler(request(VALID), undefined as never);
+
+    expect(response.status).toBe(201);
+    expect(response.status).not.toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      reference: "CRR-ABCDEFGH",
+    });
+    expect(test.submit).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,9 +4,12 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { AdminRole } from "@/generated/prisma/enums";
 import { InMemoryEmailSender } from "@/server/integrations/email-sender/in-memory";
 import { InMemoryErrorReporter } from "@/server/integrations/error-reporter/in-memory";
+import { InMemoryRateLimiter } from "@/server/integrations/rate-limiter/in-memory";
 import { deliverPurchaseInquiryNotification } from "@/server/modules/inquiries/notification";
+import { createPurchaseInquiryPost } from "@/server/modules/inquiries/purchase-route";
 import { createPrismaInquiryRepository } from "@/server/modules/inquiries/repository";
 import { createInquiryService } from "@/server/modules/inquiries/service";
+import { createPrismaSettingsRepository } from "@/server/modules/settings/repository";
 
 import { setupDatabaseSuite } from "../support/lifecycle";
 
@@ -95,6 +98,74 @@ describe("purchase inquiry integration", () => {
       reference: "CRR-ABCDEFGH",
       subject: { brandName: "Toyota", model: "Prado Inquiry" },
     });
+  });
+
+  it("returns 201 through the route with the business_settings singleton absent and leaves the vehicle unchanged", async () => {
+    // Reproduces the Production shape: id=1 business_settings row does not exist.
+    const vehicle = await publishedVehicle();
+    expect(await client().businessSettings.count()).toBe(0);
+
+    const emailSender = new InMemoryEmailSender();
+    const tasks: Array<() => void | Promise<void>> = [];
+    const handler = createPurchaseInquiryPost({
+      inquiryService: createInquiryService({
+        repository: createPrismaInquiryRepository(client()),
+        createReference: () => "CRR-ABCDEFGH",
+      }),
+      settingsRepository: createPrismaSettingsRepository(client()),
+      rateLimiter: new InMemoryRateLimiter(),
+      emailSender,
+      errorReporter: () => new InMemoryErrorReporter(),
+      hashSecret: "a-safe-test-secret-that-is-at-least-32-characters",
+      publicOrigin: "https://example.test",
+      allowedOrigin: "http://localhost:3000",
+      scheduleAfter: (task) => {
+        tasks.push(task);
+      },
+    });
+
+    const before = await client().vehicle.findUniqueOrThrow({
+      where: { id: vehicle.id },
+      select: { listingState: true, saleStatus: true, updatedAt: true },
+    });
+
+    const response = await handler(
+      new Request("http://localhost:3000/api/inquiries/purchase", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+          "x-forwarded-for": "203.0.113.9",
+        },
+        body: JSON.stringify({
+          vehicleId: vehicle.id,
+          customerName: "Asha Mrema",
+          customerPhone: "0712345678",
+        }),
+      }),
+      undefined as never,
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({
+      reference: "CRR-ABCDEFGH",
+      message: "Your purchase request has been saved.",
+      whatsappUrl: null,
+    });
+
+    // Exactly one inquiry committed.
+    expect(await client().inquiry.count()).toBe(1);
+
+    // Draining the scheduled notification attempts no email (recipients empty).
+    for (const task of tasks) await task();
+    expect(emailSender.getSentMessages()).toHaveLength(0);
+
+    // Vehicle listing state, sale status, and updatedAt are untouched.
+    const after = await client().vehicle.findUniqueOrThrow({
+      where: { id: vehicle.id },
+      select: { listingState: true, saleStatus: true, updatedAt: true },
+    });
+    expect(after).toEqual(before);
   });
 
   it("keeps the committed row when notification delivery fails", async () => {

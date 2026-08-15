@@ -85,6 +85,23 @@ export function VehicleGallery({ images, title }: Props) {
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Tab") {
+        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable && focusable.length > 0) {
+          const first = focusable[0]!;
+          const last = focusable[focusable.length - 1]!;
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+        return;
+      }
       const action = lightboxKeyAction(event.key);
       if (action === null) return;
       event.preventDefault();
@@ -152,7 +169,7 @@ export function VehicleGallery({ images, title }: Props) {
                 onClick={() => setSelected(index)}
                 aria-current={index === selected}
                 aria-label={`Show ${altFor(image, title, index)}`}
-                className={`block w-full overflow-hidden rounded-lg border focus-visible:ring-2 focus-visible:ring-ring ${
+                className={`block min-h-11 w-full overflow-hidden rounded-lg border focus-visible:ring-2 focus-visible:ring-ring ${
                   index === selected
                     ? "ring-2 ring-brand-gold-foreground"
                     : "opacity-80 hover:opacity-100"
@@ -203,7 +220,7 @@ export function VehicleGallery({ images, title }: Props) {
                 type="button"
                 onClick={closeLightbox}
                 aria-label="Close photo viewer"
-                className="rounded-full p-2 hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
+                className="flex size-11 items-center justify-center rounded-full hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
               >
                 <XIcon aria-hidden="true" />
               </button>

@@ -147,6 +147,33 @@ function generateShortId(): string {
   return randomBytes(4).toString("hex");
 }
 
+/** Publicly rendered specification fields (registration/chassis are private). */
+const SPECIFICATION_PUBLIC_KEYS = [
+  "mileageKm",
+  "engineCc",
+  "engineDescription",
+  "seats",
+  "doors",
+  "exteriorColor",
+  "interiorColor",
+  "drivetrain",
+] as const;
+
+/**
+ * True when a specifications update changes at least one publicly rendered
+ * field relative to the current record. A field absent from the payload, or
+ * present with an unchanged value, is not a change — so an edit that only sets
+ * the private registration/chassis numbers returns false.
+ */
+function specificationsPublicChange(
+  next: Record<string, unknown>,
+  current: Record<string, unknown>,
+): boolean {
+  return SPECIFICATION_PUBLIC_KEYS.some(
+    (key) => next[key] !== undefined && next[key] !== current[key],
+  );
+}
+
 async function serializable<T>(
   transaction: VehicleTransactionRunner,
   operation: (repositories: VehicleTransactionRepositories) => Promise<T>,
@@ -297,10 +324,12 @@ export function createVehicleService(input: {
       const parsed = vehicleStepUpdateSchema.safeParse(rawInput);
       if (!id.success || !parsed.success)
         throw validationError("Invalid vehicle draft update.");
+      let publicChanged = false;
       try {
         const updated = await transaction(async ({ vehicles }) => {
           const current = await vehicles.getAdminById(id.data);
           if (current === null) throw notFound();
+          const published = current.listingState === ListingState.published;
           let data: Prisma.VehicleUncheckedUpdateInput;
           switch (parsed.data.step) {
             case "basics": {
@@ -320,6 +349,8 @@ export function createVehicleService(input: {
                 ...next,
                 ...(brandName === undefined ? {} : { brandName }),
               };
+              // Every basics field is publicly rendered.
+              publicChanged = published;
               break;
             }
             case "modes-and-pricing": {
@@ -340,15 +371,26 @@ export function createVehicleService(input: {
                     : toBigIntShillings(next.rentalDailyPrice),
                 minRentalDays: next.minRentalDays,
               };
+              publicChanged = published;
+              break;
+            }
+            case "specifications": {
+              const next = parsed.data.data;
+              data = { ...next };
+              // Registration/chassis are private-only; a specifications edit
+              // revalidates only when a publicly rendered field actually
+              // changes, so a private-only edit never revalidates.
+              publicChanged =
+                published && specificationsPublicChange(next, current);
               break;
             }
             default:
               data = { ...parsed.data.data };
+              publicChanged = published;
           }
           return vehicles.updateDraft(id.data, data);
         });
-        if (updated.listingState === ListingState.published)
-          await revalidateAfterCommit(updated.slug);
+        if (publicChanged) await revalidateAfterCommit(updated.slug);
         return toVehicleAdminDTO(updated);
       } catch (error) {
         if (isIdentifierUniqueViolation(error))
@@ -414,6 +456,9 @@ export function createVehicleService(input: {
             if (current.listingState === ListingState.draft) return current;
             if (current.listingState !== ListingState.archived)
               throw invalidTransition();
+            // The archived vehicle was publicly resolvable as a retired detail
+            // page; restoring to draft must purge that cached page.
+            publicChanged = true;
             return vehicles.updateListingState(id.data, {
               listingState: "draft",
               publishedAt: null,

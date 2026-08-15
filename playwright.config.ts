@@ -11,11 +11,13 @@ import { defineConfig, devices } from "@playwright/test";
 const isCI = Boolean(process.env.CI);
 const runDatabaseE2E = process.env.RUN_DATABASE_E2E === "true";
 // Guarded, disposable-database E2E specs (Phase 3 inquiry, Phase 4 gallery,
-// and Phase 5 vehicle administration).
+// Phase 5 vehicle administration, and Phase 6 public catalogue).
 const databaseE2ESpec =
+  /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue)\.spec\.ts$/;
+const databaseE2EExcludedOnPixel =
   /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin)\.spec\.ts$/;
 const explicitlyRequestedDatabaseE2E = process.argv.some((argument) =>
-  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin)\.spec\.ts$/.test(
+  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue)\.spec\.ts$/.test(
     argument,
   ),
 );
@@ -81,7 +83,7 @@ export default defineConfig({
     },
     {
       name: "pixel-5",
-      testIgnore: databaseE2ESpec,
+      testIgnore: runDatabaseE2E ? databaseE2EExcludedOnPixel : databaseE2ESpec,
       use: { ...devices["Pixel 5"] },
     },
     {
@@ -92,7 +94,12 @@ export default defineConfig({
   ],
   webServer: {
     command: isCI ? "pnpm start" : "pnpm dev",
-    url: baseURL,
+    // Probe a static asset for readiness, never `/`: rendering the homepage at
+    // boot would warm the tag-based catalogue/settings data cache with the
+    // pre-seed (empty) result, so a spec that seeds fixtures after the server is
+    // ready would then read a stale, empty homepage. A static asset confirms the
+    // server is listening without warming any request-time data cache.
+    url: `${baseURL}/favicon.ico`,
     // Never hijack an unknown server in CI; locally, reuse a running dev server.
     reuseExistingServer: !isCI,
     timeout: 120 * 1000,

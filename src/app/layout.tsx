@@ -2,9 +2,6 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-import { SiteHeader } from "@/components/layout/site-header";
-import { SiteFooter } from "@/components/layout/site-footer";
-import { PublicChrome } from "@/components/layout/public-chrome";
 import { Toaster } from "@/components/ui/sonner";
 import { siteConfig } from "@/lib/site";
 
@@ -36,13 +33,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} flex min-h-screen flex-col antialiased`}
       >
-        <PublicChrome>
-          <SiteHeader />
-        </PublicChrome>
         {children}
-        <PublicChrome>
-          <SiteFooter />
-        </PublicChrome>
         <Toaster />
       </body>
     </html>

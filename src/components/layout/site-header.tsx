@@ -2,7 +2,8 @@ import Link from "next/link";
 
 import { Container } from "@/components/layout/container";
 import { MobileNavigation } from "@/components/layout/mobile-navigation";
-import { siteConfig } from "@/lib/site";
+import { NavigationLinks } from "@/components/layout/navigation-links";
+import type { PublicSettingsPresentation } from "@/server/settings/public-presentation";
 
 /**
  * Public site header shell.
@@ -12,7 +13,11 @@ import { siteConfig } from "@/lib/site";
  * primary navigation limited to routes that exist, and a non-interactive launch
  * status.
  */
-export function SiteHeader() {
+export function SiteHeader({
+  settings,
+}: {
+  settings: PublicSettingsPresentation;
+}) {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70">
       {/* Keyboard-only skip link: visually hidden until focused. */}
@@ -32,33 +37,16 @@ export function SiteHeader() {
           href="/"
           className="flex min-h-11 items-center rounded-md text-subsection font-semibold tracking-tight text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
-          {siteConfig.name}
+          {settings.businessName}
         </Link>
 
         <div className="flex items-center gap-3 sm:gap-4">
-          <nav
-            aria-label="Primary navigation"
-            className="hidden items-center gap-6 md:flex"
-          >
-            <Link
-              href="/"
-              className="flex min-h-11 items-center rounded-md text-body-sm font-medium text-foreground/80 transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-            >
-              Home
-            </Link>
+          <nav aria-label="Primary navigation" className="hidden md:block">
+            <NavigationLinks />
           </nav>
 
-          {/* Non-interactive launch status (not a navigation link). */}
-          <span className="hidden items-center gap-2 rounded-full border border-border bg-surface-subtle px-3 py-1 text-eyebrow font-medium text-muted-foreground uppercase md:inline-flex">
-            <span
-              aria-hidden="true"
-              className="size-1.5 rounded-full bg-brand-gold"
-            />
-            Showroom launching soon
-          </span>
-
           <div className="md:hidden">
-            <MobileNavigation />
+            <MobileNavigation businessName={settings.businessName} />
           </div>
         </div>
       </Container>

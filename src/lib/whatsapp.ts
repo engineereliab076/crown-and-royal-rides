@@ -16,6 +16,7 @@ export interface DirectVehicleWhatsAppMessageInput {
   readonly year: number;
   readonly salePrice: number | null;
   readonly vehicleUrl?: string;
+  readonly modes?: readonly ("sale" | "rental")[];
 }
 
 function normalizedLines(lines: readonly (string | undefined)[]): string {
@@ -39,10 +40,17 @@ export function buildPurchaseWhatsAppMessage(
 export function buildDirectVehicleWhatsAppMessage(
   input: DirectVehicleWhatsAppMessageInput,
 ): string {
+  const modes = input.modes ?? ["sale"];
+  const interest =
+    modes.includes("sale") && modes.includes("rental")
+      ? "buying or renting"
+      : modes.includes("rental")
+        ? "renting"
+        : "purchasing";
   return normalizedLines([
     "Hello Crown and Royal Rides,",
-    `I am interested in purchasing the ${input.year} ${input.brandName} ${input.model}.`,
-    input.salePrice === null
+    `I am interested in ${interest} the ${input.year} ${input.brandName} ${input.model}.`,
+    input.salePrice === null || !modes.includes("sale")
       ? undefined
       : `Price: ${formatTzs(input.salePrice)}`,
     input.vehicleUrl === undefined ? undefined : `Vehicle: ${input.vehicleUrl}`,

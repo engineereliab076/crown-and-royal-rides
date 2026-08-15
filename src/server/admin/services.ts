@@ -4,7 +4,10 @@ import { env } from "@/lib/env";
 import { prisma } from "@/server/db/prisma";
 import { runInTransaction } from "@/server/db/transaction";
 import { getClientIp } from "@/server/http/client-ip";
-import { revalidateVehicle } from "@/server/cache/vehicles";
+import {
+  revalidateCatalogue,
+  revalidatePublicVehicle,
+} from "@/server/cache/vehicles";
 import { getIntegrationContainer } from "@/server/integrations/container";
 import { createPrismaAdministratorRepository } from "@/server/modules/administrators/repository";
 import { createAdministratorRateLimiter } from "@/server/modules/administrators/rate-limit";
@@ -126,7 +129,7 @@ function build(): AdminServices {
         options,
         prisma,
       ),
-    revalidateVehicle,
+    revalidateVehicle: revalidatePublicVehicle,
     reportCacheFailure: async (context) => {
       try {
         await integrations.errorReporter.captureMessage(
@@ -153,6 +156,19 @@ function build(): AdminServices {
         options,
         prisma,
       ),
+    revalidatePublicCatalogue: revalidateCatalogue,
+    reportCacheFailure: async (context) => {
+      try {
+        await integrations.errorReporter.captureMessage(
+          "Brand rename catalogue revalidation failed.",
+          "warning",
+          {
+            correlationId: context.correlationId,
+            additional: { operation: "brand-rename-revalidation" },
+          },
+        );
+      } catch {}
+    },
   });
   const vehicleImageService = getVehicleImageService();
   const inquiryService = createInquiryService({

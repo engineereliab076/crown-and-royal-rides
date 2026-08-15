@@ -1,6 +1,11 @@
 import "server-only";
 
 import { prisma } from "@/server/db/prisma";
+import { createPrismaPublicVehicleRepository } from "@/server/modules/vehicles/public-repository";
+import {
+  createPublicVehicleService,
+  type PublicVehicleCatalogueService,
+} from "@/server/modules/vehicles/public-service";
 import { createPrismaVehicleRepository } from "@/server/modules/vehicles/repository";
 import {
   createVehicleService,
@@ -14,4 +19,14 @@ export function getPublicVehicleService(): VehicleService {
     repository: createPrismaVehicleRepository(prisma),
   });
   return singleton;
+}
+
+let catalogueSingleton: PublicVehicleCatalogueService | undefined;
+
+/** The public catalogue read service used by the homepage and `/cars` pages. */
+export function getPublicCatalogueService(): PublicVehicleCatalogueService {
+  catalogueSingleton ??= createPublicVehicleService({
+    repository: createPrismaPublicVehicleRepository(prisma),
+  });
+  return catalogueSingleton;
 }

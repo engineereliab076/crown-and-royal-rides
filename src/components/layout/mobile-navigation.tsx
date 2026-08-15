@@ -1,19 +1,18 @@
 "use client";
 
-import Link from "next/link";
 import { MenuIcon } from "lucide-react";
+import { useState } from "react";
 
+import { NavigationLinks } from "@/components/layout/navigation-links";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
-  SheetClose,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { siteConfig } from "@/lib/site";
 
 /**
  * Compact navigation for small screens.
@@ -22,9 +21,10 @@ import { siteConfig } from "@/lib/site";
  * restoration to the trigger, and Escape-to-close, so no custom focus logic is
  * added here. Only routes that actually exist are linked.
  */
-export function MobileNavigation() {
+export function MobileNavigation({ businessName }: { businessName: string }) {
+  const [open, setOpen] = useState(false);
   return (
-    <Sheet>
+    <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
         <Button
           variant="outline"
@@ -37,25 +37,16 @@ export function MobileNavigation() {
       </SheetTrigger>
       <SheetContent side="right" className="w-4/5 max-w-sm">
         <SheetHeader>
-          <SheetTitle>{siteConfig.name}</SheetTitle>
-          <SheetDescription>{siteConfig.description}</SheetDescription>
+          <SheetTitle>{businessName}</SheetTitle>
+          <SheetDescription>
+            Browse vehicles or contact our team.
+          </SheetDescription>
         </SheetHeader>
         <nav aria-label="Mobile navigation" className="px-4">
-          <ul className="flex flex-col gap-1">
-            <li>
-              <SheetClose asChild>
-                <Link
-                  href="/"
-                  className="flex min-h-11 items-center rounded-md px-3 text-body font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  Home
-                </Link>
-              </SheetClose>
-            </li>
-          </ul>
+          <NavigationLinks mobile onNavigate={() => setOpen(false)} />
         </nav>
         <p className="mt-auto px-4 pb-2 text-body-sm text-muted-foreground">
-          Showroom launching soon
+          Vehicle sales and rentals in Tanzania
         </p>
       </SheetContent>
     </Sheet>

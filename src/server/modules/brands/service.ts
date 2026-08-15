@@ -86,8 +86,30 @@ export function createBrandService(input: {
   repository: BrandRepository;
   transaction: BrandTransactionRunner;
   suffix?: () => string;
+  /**
+   * Revalidate the public catalogue after a brand rename propagates. Invoked
+   * only after the propagation transaction commits, and only when the rename
+   * actually changed at least one vehicle's denormalized brand name. A failure
+   * here never rolls back the committed rename.
+   */
+  revalidatePublicCatalogue?: () => void | Promise<void>;
+  /** Report a post-commit revalidation failure without leaking private data. */
+  reportCacheFailure?: (context: AuditContext) => void | Promise<void>;
 }): BrandService {
   const suffix = input.suffix ?? (() => randomBytes(3).toString("hex"));
+
+  async function revalidateAfterRename(context: AuditContext): Promise<void> {
+    if (input.revalidatePublicCatalogue === undefined) return;
+    try {
+      await input.revalidatePublicCatalogue();
+    } catch {
+      if (input.reportCacheFailure !== undefined) {
+        try {
+          await input.reportCacheFailure(context);
+        } catch {}
+      }
+    }
+  }
   return {
     async list(actor) {
       requireCapability(actor, "content:manage");
@@ -141,6 +163,7 @@ export function createBrandService(input: {
       const parsed = updateBrandSchema.safeParse(rawInput);
       if (!id.success || !parsed.success)
         throw invalid("Invalid brand update.");
+      let propagatedPublicRename = false;
       try {
         const updated = await input.transaction(
           async ({ brands, auditLog }) => {
@@ -164,6 +187,7 @@ export function createBrandService(input: {
             const propagatedVehicles = nameChanged
               ? await brands.propagateVehicleBrandName(next.id, next.name)
               : 0;
+            propagatedPublicRename = nameChanged && propagatedVehicles > 0;
             await audit(
               auditLog,
               actor,
@@ -180,6 +204,9 @@ export function createBrandService(input: {
           },
           { isolationLevel: "Serializable" },
         );
+        // Revalidate the public catalogue only after the rename transaction
+        // has committed, and only when it actually changed public vehicles.
+        if (propagatedPublicRename) await revalidateAfterRename(context);
         return toBrandDTO(updated);
       } catch (error) {
         if (unique(error))

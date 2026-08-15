@@ -76,3 +76,13 @@ export function cloudinaryLoader({ src, width }: CloudinaryLoaderArgs): string {
   const transformation = `f_auto,q_auto,c_limit,w_${clampWidth(width)}`;
   return `${url.origin}${prefix}${transformation}/${remainder}`;
 }
+
+/**
+ * Default export so this module can serve as the Next.js `images.loaderFile`.
+ *
+ * Configuring it globally lets Server Components render `<Image>` without passing
+ * the loader function as a prop (a function may not cross the server→client
+ * boundary). Client Components may still pass an explicit `loader` prop, which
+ * takes precedence over this global default.
+ */
+export default cloudinaryLoader;

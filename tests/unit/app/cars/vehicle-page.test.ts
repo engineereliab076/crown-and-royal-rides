@@ -2,12 +2,20 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("public vehicle page boundaries", () => {
-  const source = readFileSync("src/app/cars/[slug]/page.tsx", "utf8");
+  const source = readFileSync("src/app/(public)/cars/[slug]/page.tsx", "utf8");
 
-  it("loads through the public vehicle service and stable tagged cache", () => {
-    expect(source).toContain("getPublicVehicleService().getPublicBySlug(slug)");
-    expect(source).toContain("getCachedPublicVehicle");
-    expect(source).toContain("export const revalidate = 300");
+  it("loads through the public catalogue service and stable tagged cache", () => {
+    expect(source).toContain(
+      "getPublicCatalogueService().getPublicDetail(slug)",
+    );
+    expect(source).toContain("getCachedPublicVehicleDetail");
+    expect(source).toContain("getCachedPublicVehicleDetail");
+  });
+
+  it("derives its robots directive from the centralized presentation state", () => {
+    expect(source).toContain(
+      "robots: { index: robots.index, follow: robots.follow }",
+    );
   });
 
   it("maps safe not-found errors to Next.js notFound", () => {
@@ -16,7 +24,7 @@ describe("public vehicle page boundaries", () => {
   });
 
   it("renders the responsive gallery instead of a single unoptimized cover", () => {
-    // Phase 4: the public page delegates to the accessible gallery component,
+    // Phase 4/6: the public page delegates to the accessible gallery component,
     // which uses next/image through the Cloudinary loader (no `unoptimized`).
     expect(source).toContain("<VehicleGallery");
     expect(source).toContain("images={vehicle.images}");

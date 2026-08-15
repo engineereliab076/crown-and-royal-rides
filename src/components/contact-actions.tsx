@@ -12,8 +12,10 @@ export function ContactActions({
 }) {
   return (
     <section
+      id="purchase-request"
+      tabIndex={-1}
       aria-labelledby="purchase-request-heading"
-      className="rounded-2xl border bg-card p-5 shadow-soft sm:p-7"
+      className="scroll-mt-24 rounded-2xl border bg-card p-5 shadow-soft outline-none focus-visible:ring-2 focus-visible:ring-ring sm:p-7"
     >
       <h2 id="purchase-request-heading" className="text-xl font-semibold">
         Purchase this vehicle

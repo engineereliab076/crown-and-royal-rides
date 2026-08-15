@@ -1,6 +1,6 @@
 import "server-only";
 
-import { revalidateVehicle } from "@/server/cache/vehicles";
+import { revalidatePublicVehicle } from "@/server/cache/vehicles";
 import { prisma } from "@/server/db/prisma";
 import { runInTransaction } from "@/server/db/transaction";
 import { getIntegrationContainer } from "@/server/integrations/container";
@@ -44,7 +44,7 @@ export function getVehicleImageService(): VehicleImageService {
       ),
     mediaStorage: () => integrations.mediaStorage,
     errorReporter: () => integrations.errorReporter,
-    revalidate: (slug) => revalidateVehicle(slug),
+    revalidate: (slug) => revalidatePublicVehicle(slug),
   });
   return singleton;
 }

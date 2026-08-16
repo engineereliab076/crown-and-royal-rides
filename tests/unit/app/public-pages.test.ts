@@ -12,10 +12,16 @@ describe("Phase 6 public page boundaries", () => {
     expect(cache).toContain("VEHICLE_REVALIDATE_SECONDS = 300");
   });
 
-  it("uses only the shared pagination parameter on catalogue pages", () => {
+  it("keeps request-rendered metadata in the server-rendered document head", () => {
+    const config = read("next.config.ts");
+    expect(config).toContain("htmlLimitedBots: /.*/");
+  });
+
+  it("uses the canonical Group 1 parser and search boundary on catalogue pages", () => {
     for (const route of ["cars", "cars-for-sale", "cars-for-rent"]) {
       const source = read(`src/app/(public)/${route}/page.tsx`);
-      expect(source).toContain("normalizePageParam((await searchParams).page)");
+      expect(source).toContain("parseVehicleFilters(await searchParams");
+      expect(source).toContain("searchPublicCatalogue(parsed)");
       expect(source).not.toContain("<form");
       expect(source).not.toMatch(/server\/db\/prisma|generated\/prisma/);
     }

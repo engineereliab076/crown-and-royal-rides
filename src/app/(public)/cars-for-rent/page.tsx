@@ -1,10 +1,9 @@
 import type { Metadata } from "next";
 
 import { CataloguePage } from "@/components/vehicles/catalogue-page";
-import { normalizePageParam } from "@/lib/pagination";
-import { paginatedCanonical } from "@/lib/public-metadata";
-import { getCachedRentalCatalogue } from "@/server/cache/vehicles";
-import { getPublicCatalogueService } from "@/server/vehicles/services";
+import { parseVehicleFilters } from "@/lib/vehicle-filters";
+import { catalogueMetadata } from "@/lib/public-metadata";
+import { searchPublicCatalogue } from "@/server/vehicles/services";
 
 type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -13,19 +12,18 @@ type Props = {
 export async function generateMetadata({
   searchParams,
 }: Props): Promise<Metadata> {
-  const page = normalizePageParam((await searchParams).page);
-  return {
+  const parsed = parseVehicleFilters(await searchParams, "rental");
+  return catalogueMetadata({
+    path: "/cars-for-rent",
     title: "Vehicles for rent",
     description: "Browse available and reserved rental vehicles.",
-    alternates: { canonical: paginatedCanonical("/cars-for-rent", page) },
-  };
+    parsed,
+  });
 }
 
 export default async function CarsForRentPage({ searchParams }: Props) {
-  const page = normalizePageParam((await searchParams).page);
-  const catalogue = await getCachedRentalCatalogue(page, () =>
-    getPublicCatalogueService().listRentalCatalogue(page),
-  );
+  const parsed = parseVehicleFilters(await searchParams, "rental");
+  const catalogue = await searchPublicCatalogue(parsed);
   return (
     <CataloguePage
       title="Vehicles for rent"
@@ -33,6 +31,7 @@ export default async function CarsForRentPage({ searchParams }: Props) {
       basePath="/cars-for-rent"
       catalogue={catalogue}
       emptyTitle="No rental vehicles are available right now"
+      mode="rental"
     />
   );
 }

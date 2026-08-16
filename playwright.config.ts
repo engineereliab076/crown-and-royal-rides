@@ -11,13 +11,13 @@ import { defineConfig, devices } from "@playwright/test";
 const isCI = Boolean(process.env.CI);
 const runDatabaseE2E = process.env.RUN_DATABASE_E2E === "true";
 // Guarded, disposable-database E2E specs (Phase 3 inquiry, Phase 4 gallery,
-// Phase 5 vehicle administration, and Phase 6 public catalogue).
+// Phase 5 vehicle administration, and Phase 6/7 public catalogue).
 const databaseE2ESpec =
-  /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue)\.spec\.ts$/;
+  /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue|phase7-public-search)\.spec\.ts$/;
 const databaseE2EExcludedOnPixel =
   /(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin)\.spec\.ts$/;
 const explicitlyRequestedDatabaseE2E = process.argv.some((argument) =>
-  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue)\.spec\.ts$/.test(
+  /(?:^|[\\/])(?:purchase-inquiry|vehicle-gallery|phase5-vehicle-admin|phase6-public-catalogue|phase7-public-search)\.spec\.ts$/.test(
     argument,
   ),
 );

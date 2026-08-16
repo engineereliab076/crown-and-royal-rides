@@ -1,13 +1,19 @@
 import "server-only";
 
+import { toShillings } from "@/lib/money";
 import { buildPaginatedResult, PUBLIC_PAGE_SIZE } from "@/lib/pagination";
+import { toAppliedFilters } from "@/lib/vehicle-filters";
 import type { BodyTypeValue } from "@/lib/vehicle-values";
+import { resolveVehiclePublicState } from "@/lib/vehicle-public-state";
 import { AppError } from "@/server/http/errors";
 import {
   resolveDetailRecordPresentation,
   toPublicVehicleCard,
   toPublicVehicleDetail,
   toRelatedVehicle,
+  toVehicleFacets,
+  type NormalizedCatalogueQuery,
+  type NormalizedCatalogueResult,
   type PublicVehicleCard,
   type PublicVehicleDetailResult,
   type PublicVehiclePage,
@@ -42,6 +48,16 @@ export interface PublicVehicleCatalogueService {
    * and the robots directive.
    */
   getPublicDetail(slug: string): Promise<PublicVehicleDetailResult>;
+  /**
+   * Execute a normalized catalogue search: cards, 24-per-page pagination,
+   * accepted filters, chosen sort, and facets. The result is fully determined
+   * by the normalized query and carries no request-specific ignored-filter
+   * report, so it is safe to store in the shared data cache.
+   */
+  executeCatalogueSearch(
+    query: NormalizedCatalogueQuery,
+  ): Promise<NormalizedCatalogueResult>;
+  listIndexableSlugs(): Promise<readonly string[]>;
 }
 
 function notFound(): AppError {
@@ -116,6 +132,56 @@ export function createPublicVehicleService(input: {
         related,
         robots: presentation.robots,
       };
+    },
+    async executeCatalogueSearch(query) {
+      const page = normalizePage(query.page);
+      const [record, rawFacets] = await Promise.all([
+        repository.searchVehicles({
+          mode: query.mode,
+          filters: query.filters,
+          sort: query.sort,
+          page,
+          pageSize: PUBLIC_PAGE_SIZE,
+        }),
+        repository.getVehicleFacets({
+          mode: query.mode,
+          filters: query.filters,
+        }),
+      ]);
+      const paginated = buildPaginatedResult({
+        items: record.items.map(toPublicVehicleCard),
+        page,
+        totalItems: record.total,
+        pageSize: PUBLIC_PAGE_SIZE,
+      });
+      return {
+        ...paginated,
+        appliedFilters: toAppliedFilters(query.filters),
+        sort: query.sort,
+        facets: toVehicleFacets(rawFacets, query.filters),
+      };
+    },
+    async listIndexableSlugs() {
+      const candidates = await repository.listSitemapCandidates();
+      return candidates.flatMap((candidate) => {
+        const presentation = resolveVehiclePublicState({
+          listingState: candidate.listingState,
+          isForSale: candidate.isForSale,
+          saleStatus: candidate.saleStatus,
+          salePrice:
+            candidate.salePrice === null
+              ? null
+              : toShillings(candidate.salePrice),
+          isForRent: candidate.isForRent,
+          rentalStatus: candidate.rentalStatus,
+          rentalDailyPrice:
+            candidate.rentalDailyPrice === null
+              ? null
+              : toShillings(candidate.rentalDailyPrice),
+          minRentalDays: candidate.minRentalDays,
+        });
+        return presentation.indexable ? [candidate.slug] : [];
+      });
     },
   };
 }

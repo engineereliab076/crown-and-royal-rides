@@ -380,11 +380,11 @@ describe("public vehicle catalogue against PostgreSQL", () => {
     expect(serialized).not.toContain("PHASE6-PRIVATE-CHASSIS");
   });
 
-  it("paginates 25 tied rows without duplicates or gaps and handles pages beyond the end", async () => {
+  it("paginates 49 tied rows without duplicates or gaps at 24 per page and handles pages beyond the end", async () => {
     const brand = await createBrand("pagination");
     const publishedAt = new Date("2026-08-04T00:00:00.000Z");
     const expectedIds: string[] = [];
-    for (let index = 1; index <= 25; index += 1) {
+    for (let index = 1; index <= 49; index += 1) {
       const id = `62000000-0000-4000-8000-${index
         .toString()
         .padStart(12, "0")}`;
@@ -406,26 +406,26 @@ describe("public vehicle catalogue against PostgreSQL", () => {
       (vehicle) => vehicle.id,
     );
 
-    expect(first.items).toHaveLength(12);
-    expect(second.items).toHaveLength(12);
+    expect(first.items).toHaveLength(24);
+    expect(second.items).toHaveLength(24);
     expect(third.items).toHaveLength(1);
     expect(new Set([...first.items, ...second.items].map((item) => item.id)).size).toBe(
-      24,
+      48,
     );
     expect(allIds).toEqual(expectedIds);
-    expect(new Set(allIds).size).toBe(25);
+    expect(new Set(allIds).size).toBe(49);
     expect(first).toMatchObject({
       page: 1,
-      pageSize: 12,
-      totalItems: 25,
+      pageSize: 24,
+      totalItems: 49,
       totalPages: 3,
       hasPreviousPage: false,
       hasNextPage: true,
     });
     expect(second).toMatchObject({
       page: 2,
-      pageSize: 12,
-      totalItems: 25,
+      pageSize: 24,
+      totalItems: 49,
       totalPages: 3,
       hasPreviousPage: true,
       hasNextPage: true,
@@ -433,8 +433,8 @@ describe("public vehicle catalogue against PostgreSQL", () => {
     expect(beyond).toMatchObject({
       items: [],
       page: 4,
-      pageSize: 12,
-      totalItems: 25,
+      pageSize: 24,
+      totalItems: 49,
       totalPages: 3,
       hasPreviousPage: true,
       hasNextPage: false,

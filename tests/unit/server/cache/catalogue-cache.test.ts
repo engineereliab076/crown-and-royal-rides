@@ -19,12 +19,14 @@ vi.mock("next/cache", () => ({
   },
 }));
 
+import type { NormalizedVehicleFilters } from "@/lib/vehicle-filters";
 import {
   getCachedActiveCatalogue,
   getCachedFeatured,
   getCachedPublicVehicleDetail,
   getCachedRentalCatalogue,
   getCachedSaleCatalogue,
+  getCachedVehicleSearch,
   revalidateCatalogue,
   revalidatePublicVehicle,
   revalidateVehicle,
@@ -34,6 +36,26 @@ import {
   VEHICLE_RENTAL_TAG,
   VEHICLE_SALE_TAG,
 } from "@/server/cache/vehicles";
+
+function filters(
+  overrides: Partial<NormalizedVehicleFilters> = {},
+): NormalizedVehicleFilters {
+  return {
+    q: null,
+    brand: null,
+    bodyType: null,
+    condition: null,
+    transmission: null,
+    fuelType: null,
+    drivetrain: null,
+    driverOption: null,
+    yearMin: null,
+    yearMax: null,
+    priceMin: null,
+    priceMax: null,
+    ...overrides,
+  };
+}
 
 describe("catalogue cache tags", () => {
   it("exposes stable, distinct tag identifiers", () => {
@@ -90,6 +112,74 @@ describe("parameterized catalogue caches never share keys across pages/slugs", (
     expect(
       (hoisted.unstableCalls[0]?.options as { tags: string[] }).tags,
     ).toEqual([VEHICLE_FEATURED_TAG]);
+  });
+});
+
+describe("catalogue search cache identity", () => {
+  it("keys by the canonical normalized query and tags by mode", async () => {
+    hoisted.unstableCalls.length = 0;
+    await getCachedVehicleSearch(
+      {
+        mode: "sale",
+        filters: filters({ bodyType: "suv", priceMin: 1000 }),
+        sort: "price_asc",
+        page: 2,
+      },
+      async () => ({}) as never,
+    );
+    const call = hoisted.unstableCalls[0];
+    const keyParts = call?.keyParts as [string, string];
+    expect(keyParts[0]).toBe("public-vehicle-search");
+    expect(JSON.parse(keyParts[1])).toMatchObject({
+      version: 2,
+      mode: "sale",
+      filters: { bodyType: "suv", priceMin: 1000 },
+      sort: "price_asc",
+      page: 2,
+      pageSize: 24,
+    });
+    expect((call?.options as { tags: string[] }).tags).toEqual([
+      VEHICLE_SALE_TAG,
+    ]);
+  });
+
+  it("shares one key for semantically equivalent queries and separates modes", async () => {
+    hoisted.unstableCalls.length = 0;
+    await getCachedVehicleSearch(
+      {
+        mode: "all",
+        filters: filters({ bodyType: "suv" }),
+        sort: "newest",
+        page: 1,
+      },
+      async () => ({}) as never,
+    );
+    await getCachedVehicleSearch(
+      {
+        mode: "all",
+        filters: filters({ bodyType: "suv" }),
+        sort: "newest",
+        page: 1,
+      },
+      async () => ({}) as never,
+    );
+    await getCachedVehicleSearch(
+      {
+        mode: "rental",
+        filters: filters({ bodyType: "suv" }),
+        sort: "newest",
+        page: 1,
+      },
+      async () => ({}) as never,
+    );
+    const [a, b, c] = hoisted.unstableCalls.map(
+      (call) => (call.keyParts as [string, string])[1],
+    );
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+    expect(
+      (hoisted.unstableCalls[2]?.options as { tags: string[] }).tags,
+    ).toEqual([VEHICLE_RENTAL_TAG]);
   });
 });
 

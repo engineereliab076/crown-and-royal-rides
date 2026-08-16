@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ContactActions } from "@/components/contact-actions";
+import { JsonLd } from "@/components/json-ld";
 import { Container } from "@/components/layout/container";
 import { VehicleGallery } from "@/components/vehicle-gallery";
 import { PriceDisplay } from "@/components/vehicles/price-display";
@@ -11,7 +12,8 @@ import { StickyMobileActions } from "@/components/vehicles/sticky-mobile-actions
 import { VehicleGrid } from "@/components/vehicles/vehicle-grid";
 import { VehicleSpecTable } from "@/components/vehicles/vehicle-spec-table";
 import { VehicleStatusBadge } from "@/components/vehicles/vehicle-status-badge";
-import { publicUrl } from "@/lib/public-metadata";
+import { publicUrl, vehicleDetailMetadata } from "@/lib/public-metadata";
+import { buildVehicleStructuredData } from "@/lib/structured-data";
 import {
   buildDirectVehicleWhatsAppMessage,
   buildWhatsAppUrl,
@@ -43,23 +45,7 @@ export async function generateMetadata({
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await params;
-  const { vehicle, robots, presentation } = await loadVehicle(slug);
-  const title = detailTitle(vehicle);
-  const suffix =
-    presentation.state === "sold-historical"
-      ? " — sold"
-      : presentation.state === "retired"
-        ? " — no longer available"
-        : presentation.state === "unavailable"
-          ? " — unavailable"
-          : "";
-  return {
-    title: `${title}${suffix}`,
-    description:
-      vehicle.description?.trim() || `${title} from Crown and Royal Rides.`,
-    robots: { index: robots.index, follow: robots.follow },
-    alternates: { canonical: publicUrl(`/cars/${vehicle.slug}`) },
-  };
+  return vehicleDetailMetadata(await loadVehicle(slug));
 }
 
 function StateNotice({
@@ -112,6 +98,12 @@ export default async function VehiclePublicPage({
     getPublicSettingsPresentation(),
   ]);
   const title = detailTitle(vehicle);
+  const canonicalUrl = publicUrl(`/cars/${vehicle.slug}`).toString();
+  const structuredData = buildVehicleStructuredData({
+    vehicle,
+    presentation,
+    canonicalUrl,
+  });
   const modes = [
     presentation.saleActionable ? "sale" : null,
     presentation.rentalActionable ? "rental" : null,
@@ -148,6 +140,7 @@ export default async function VehiclePublicPage({
       id="main-content"
       className={`flex-1 py-8 sm:py-12 ${hasStickyAction ? "pb-24 md:pb-12" : ""}`}
     >
+      {structuredData ? <JsonLd data={structuredData} /> : null}
       <Container className="space-y-8">
         <nav aria-label="Breadcrumb">
           <ol className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">

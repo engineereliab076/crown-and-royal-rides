@@ -3,10 +3,12 @@ import { Suspense } from "react";
 
 import { CataloguePage } from "@/components/vehicles/catalogue-page";
 import { CatalogueLoadingScreen } from "@/components/vehicles/catalogue-loading";
-import { normalizePageParam } from "@/lib/pagination";
-import { paginatedCanonical } from "@/lib/public-metadata";
-import { getCachedActiveCatalogue } from "@/server/cache/vehicles";
-import { getPublicCatalogueService } from "@/server/vehicles/services";
+import {
+  parseVehicleFilters,
+  serializeCatalogueState,
+} from "@/lib/vehicle-filters";
+import { catalogueMetadata } from "@/lib/public-metadata";
+import { searchPublicCatalogue } from "@/server/vehicles/services";
 
 type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -15,22 +17,25 @@ type Props = {
 export async function generateMetadata({
   searchParams,
 }: Props): Promise<Metadata> {
-  const page = normalizePageParam((await searchParams).page);
-  return {
+  const parsed = parseVehicleFilters(await searchParams, "all");
+  return catalogueMetadata({
+    path: "/cars",
     title: "All vehicles",
     description:
       "Browse currently usable published vehicles for sale and rent.",
-    alternates: { canonical: paginatedCanonical("/cars", page) },
-  };
+    parsed,
+  });
 }
 
 // A page-level `<Suspense>` (not a route `loading.tsx`) provides the skeleton so
 // the sibling detail route `/cars/[slug]` keeps no loading boundary in its
 // ancestry and can therefore still return a hard 404 for missing/draft slugs.
-async function CarsCatalogue({ page }: { page: number }) {
-  const catalogue = await getCachedActiveCatalogue(page, () =>
-    getPublicCatalogueService().listActiveCatalogue(page),
-  );
+async function CarsCatalogue({
+  parsed,
+}: {
+  parsed: ReturnType<typeof parseVehicleFilters>;
+}) {
+  const catalogue = await searchPublicCatalogue(parsed);
   return (
     <CataloguePage
       title="All vehicles"
@@ -38,15 +43,19 @@ async function CarsCatalogue({ page }: { page: number }) {
       basePath="/cars"
       catalogue={catalogue}
       emptyTitle="No vehicles are available right now"
+      mode="all"
     />
   );
 }
 
 export default async function CarsPage({ searchParams }: Props) {
-  const page = normalizePageParam((await searchParams).page);
+  const parsed = parseVehicleFilters(await searchParams, "all");
   return (
-    <Suspense key={page} fallback={<CatalogueLoadingScreen />}>
-      <CarsCatalogue page={page} />
+    <Suspense
+      key={serializeCatalogueState(parsed)}
+      fallback={<CatalogueLoadingScreen />}
+    >
+      <CarsCatalogue parsed={parsed} />
     </Suspense>
   );
 }

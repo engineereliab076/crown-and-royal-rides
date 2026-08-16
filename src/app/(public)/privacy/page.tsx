@@ -1,14 +1,16 @@
 import type { Metadata } from "next";
 
 import { Container } from "@/components/layout/container";
-import { publicUrl } from "@/lib/public-metadata";
+import { publicPageMetadata } from "@/lib/public-metadata";
 import { getPublicSettingsPresentation } from "@/server/settings/public-presentation";
 
-export const metadata: Metadata = {
-  title: "Privacy",
-  description: "How customer information is handled when using this website.",
-  alternates: { canonical: publicUrl("/privacy") },
-};
+export function generateMetadata(): Metadata {
+  return publicPageMetadata({
+    path: "/privacy",
+    title: "Privacy",
+    description: "How customer information is handled when using this website.",
+  });
+}
 
 export default async function PrivacyPage() {
   const settings = await getPublicSettingsPresentation();

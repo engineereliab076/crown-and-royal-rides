@@ -1112,6 +1112,83 @@ minimal read-only administrator list. Viewing, rental-package and general
 contact inquiries, inquiry detail/edit/status mutation, advanced filters,
 catalogue search, and further media work remain out of scope.
 
+## Phase 7 public catalogue discovery
+
+The three catalogue routes use one URL-driven server search boundary and a fixed
+page size of 24 on every device:
+
+- `/cars` searches all currently usable published sale/rental vehicles.
+- `/cars-for-sale` searches available and reserved sale vehicles and enables
+  sale-price filtering/sorting.
+- `/cars-for-rent` searches available and reserved rental vehicles and enables
+  daily-price filtering/sorting.
+
+Supported query parameters are `q`, `brand`, `bodyType`, `condition`,
+`transmission`, `fuelType`, `drivetrain`, `driverOption`, `yearMin`, `yearMax`,
+mode-specific `priceMin`/`priceMax`, `sort`, and `page`. Search covers the public
+brand/model/search document maintained by the vehicle search schema. Location,
+status, mileage, engine size, seats/doors, colours, features, negotiability,
+featured state, and private identifiers are not public filters. Rejected values
+are ignored without being reflected in controls or generated links.
+
+Sorts are `newest` and `year_desc` everywhere; sale/rental routes additionally
+support `price_asc` and `price_desc`; `relevance` is offered only when a
+normalized search query exists. Default `newest`, page 1, blanks, and absent
+filters are omitted from generated URLs. Any filter or non-default sort makes a
+catalogue URL `noindex,follow`; unfiltered pages after page 1 are also
+`noindex,follow`. Clean base catalogue pages are `index,follow`.
+
+Reserved vehicles stay visible and indexable with their publicly permitted
+price, but have no purchase/rental action and publish no Offer JSON-LD. Active
+actionable details publish allow-listed Car/Offer data. Sold historical,
+retired, unavailable, draft, and missing vehicles publish no vehicle JSON-LD.
+All JSON-LD passes through the dedicated HTML-script escaping serializer.
+
+Vehicle/settings reads use five-minute tagged data-cache entries. Catalogue
+mutations invalidate catalogue tags, including the sitemap slug cache. The
+sitemap contains the seven static public paths plus only centrally resolved
+indexable vehicle details; it intentionally contains no filter, admin, API,
+inquiry, or package URLs. Packages remain deferred. `robots.txt` allows public
+paths, disallows `/admin/` and `/api/`, and references the canonical sitemap;
+robots rules are discovery guidance, never authorization.
+
+Run the guarded Phase 7 E2E flow only against a disposable local PostgreSQL
+database whose name contains `test` or `scratch` and never points to Neon:
+
+Set `TEST_DATABASE_URL` and `TEST_DIRECT_DATABASE_URL` to guarded localhost
+values before running the command. Managed database hosts are rejected, the
+database name must retain a `test` or `scratch` marker, and the destructive-test
+acknowledgement remains mandatory.
+
+```bash
+RUN_DATABASE_E2E=true \
+TEST_DATABASE_URL="<guarded-local-test-database-url>" \
+TEST_DIRECT_DATABASE_URL="<guarded-local-test-direct-database-url>" \
+ALLOW_TEST_DATABASE_DESTRUCTIVE_OPERATIONS=true \
+pnpm exec playwright test tests/e2e/phase7-public-search.spec.ts
+```
+
+Private-identifier names appear in tests only with conspicuously synthetic
+values to assert that public DTOs and serialized responses exclude both the
+field names and their values. They never enter public selects, cache data,
+metadata, JSON-LD, sitemap output, HTML, or URLs.
+
+For a production-build Lighthouse pass, start the compiled app with the same
+guarded local database values, keep Cloudinary delivery intercepted/local, and
+run an installed local Lighthouse CLI (do not audit a public deployment):
+
+```bash
+pnpm build
+pnpm start
+lighthouse http://localhost:3000/cars --form-factor=mobile --output=json --output-path=/tmp/catalogue-lighthouse.json --chrome-flags="--headless"
+lighthouse http://localhost:3000/cars/LOCAL_FIXTURE_SLUG --form-factor=mobile --output=json --output-path=/tmp/detail-lighthouse.json --chrome-flags="--headless"
+```
+
+Google Rich Results behavior is not guaranteed by local schema-shape tests.
+After a production release, manually validate representative active sale,
+rental, and dual-mode URLs with Google's Rich Results Test. Do not run an
+external validator during local implementation verification.
+
 ## Troubleshooting
 
 - **Port 3000 occupied**: stop the other process or run the dev server on

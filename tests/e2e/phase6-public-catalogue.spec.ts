@@ -286,8 +286,8 @@ test.describe("Phase 6 public catalogue", () => {
         isForSale: true,
       });
 
-      // Extra sale vehicles to force a second catalogue page (page size 12).
-      for (let index = 0; index < 12; index += 1) {
+      // Extra sale vehicles to force a second catalogue page (page size 24).
+      for (let index = 0; index < 24; index += 1) {
         await insertVehicle({
           slug: `phase6-page-${marker}-${index.toString().padStart(2, "0")}`,
           model: `Page Filler ${index} ${marker}`,
@@ -379,7 +379,7 @@ test.describe("Phase 6 public catalogue", () => {
       }
       await page.goto("/cars-for-sale?page=1");
       const firstPageHrefs = await pageHrefs();
-      expect(firstPageHrefs.length).toBe(12);
+      expect(firstPageHrefs.length).toBe(24);
       await page.goto("/cars-for-sale?page=2");
       const secondPageHrefs = await pageHrefs();
       expect(secondPageHrefs.length).toBeGreaterThan(0);

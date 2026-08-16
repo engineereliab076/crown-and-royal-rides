@@ -13,9 +13,7 @@ describe("public vehicle page boundaries", () => {
   });
 
   it("derives its robots directive from the centralized presentation state", () => {
-    expect(source).toContain(
-      "robots: { index: robots.index, follow: robots.follow }",
-    );
+    expect(source).toContain("vehicleDetailMetadata(await loadVehicle(slug))");
   });
 
   it("maps safe not-found errors to Next.js notFound", () => {

@@ -2,15 +2,17 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Container } from "@/components/layout/container";
-import { publicUrl } from "@/lib/public-metadata";
+import { publicPageMetadata } from "@/lib/public-metadata";
 import { getPublicSettingsPresentation } from "@/server/settings/public-presentation";
 
-export const metadata: Metadata = {
-  title: "About",
-  description:
-    "Learn about our vehicle sale and rental assistance in Tanzania.",
-  alternates: { canonical: publicUrl("/about") },
-};
+export function generateMetadata(): Metadata {
+  return publicPageMetadata({
+    path: "/about",
+    title: "About",
+    description:
+      "Learn about our vehicle sale and rental assistance in Tanzania.",
+  });
+}
 
 export default async function AboutPage() {
   const settings = await getPublicSettingsPresentation();

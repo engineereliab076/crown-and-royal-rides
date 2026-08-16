@@ -59,7 +59,7 @@ export function VehicleCard({
         </div>
         <div className="flex flex-1 flex-col gap-3 p-4">
           <div>
-            <h3 className="text-base font-semibold text-balance">{title}</h3>
+            <h2 className="text-base font-semibold text-balance">{title}</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               {driverLabel(vehicle.driverOption)}
             </p>

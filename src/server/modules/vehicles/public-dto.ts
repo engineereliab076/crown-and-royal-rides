@@ -2,12 +2,32 @@ import "server-only";
 
 import { toShillings } from "@/lib/money";
 import type { PaginatedResult } from "@/lib/pagination";
+import type {
+  AppliedFilters,
+  IgnoredFilter,
+  NormalizedVehicleFilters,
+  VehicleBrandFacetOption,
+  VehicleFacetOption,
+  VehicleFacets,
+  VehicleMode,
+  VehicleSort,
+} from "@/lib/vehicle-filters";
 import {
   resolveVehiclePublicState,
   type RobotsDirective,
   type VehiclePublicState,
 } from "@/lib/vehicle-public-state";
+import {
+  BODY_TYPES,
+  DRIVER_OPTIONS,
+  DRIVETRAINS,
+  FUEL_TYPES,
+  TRANSMISSIONS,
+  VEHICLE_CONDITIONS,
+} from "@/lib/vehicle-values";
 import type {
+  RawFacetCount,
+  RawVehicleFacets,
   VehiclePublicCardRecord,
   VehiclePublicDetailRecord,
 } from "@/server/modules/vehicles/public-repository";
@@ -105,6 +125,115 @@ export interface PublicVehicleDetailResult {
 
 /** A paginated page of catalogue cards. */
 export type PublicVehiclePage = PaginatedResult<PublicVehicleCard>;
+
+/** The normalized catalogue query the cacheable execution consumes. */
+export interface NormalizedCatalogueQuery {
+  readonly mode: VehicleMode;
+  readonly filters: NormalizedVehicleFilters;
+  readonly sort: VehicleSort;
+  readonly page: number;
+}
+
+/**
+ * The cacheable portion of a catalogue search: fully determined by the
+ * normalized query. Deliberately excludes request-specific `ignoredFilters` so
+ * it never leaks or collides through the shared data cache.
+ */
+export interface NormalizedCatalogueResult {
+  readonly items: readonly PublicVehicleCard[];
+  readonly page: number;
+  readonly pageSize: number;
+  readonly totalItems: number;
+  readonly totalPages: number;
+  readonly hasPreviousPage: boolean;
+  readonly hasNextPage: boolean;
+  readonly appliedFilters: AppliedFilters;
+  readonly sort: VehicleSort;
+  readonly facets: VehicleFacets;
+}
+
+/** The full public search result: cacheable data plus request-scoped meta. */
+export interface VehicleCatalogueSearchResult extends NormalizedCatalogueResult {
+  readonly meta: {
+    readonly ignoredFilters: readonly IgnoredFilter[];
+  };
+}
+
+/** Merge request-scoped ignored-filter reporting onto a cached result. Pure. */
+export function attachIgnoredFilters(
+  result: NormalizedCatalogueResult,
+  ignoredFilters: readonly IgnoredFilter[],
+): VehicleCatalogueSearchResult {
+  return { ...result, meta: { ignoredFilters } };
+}
+
+function orderEnumFacet(
+  order: readonly string[],
+  rows: readonly RawFacetCount[],
+  selected: string | null,
+): VehicleFacetOption[] {
+  const counts = new Map(rows.map((row) => [row.value, row.count]));
+  const options: VehicleFacetOption[] = [];
+  for (const value of order) {
+    const count = counts.get(value) ?? 0;
+    // Omit zero-count entries unless they are the currently selected value,
+    // which must remain representable so the UI can render/clear it.
+    if (count > 0 || value === selected) options.push({ value, count });
+  }
+  return options;
+}
+
+function orderBrandFacet(
+  rows: readonly VehicleBrandFacetOption[],
+  selected: string | null,
+): VehicleBrandFacetOption[] {
+  const kept = rows.filter((row) => row.count > 0 || row.value === selected);
+  if (selected !== null && !kept.some((row) => row.value === selected)) {
+    // A selected brand with no qualifying rows is still represented; its label
+    // is unknown here, so the slug doubles as a safe fallback label.
+    kept.push({ value: selected, label: selected, count: 0 });
+  }
+  return [...kept].sort(
+    (a, b) =>
+      b.count - a.count ||
+      a.label.localeCompare(b.label) ||
+      a.value.localeCompare(b.value),
+  );
+}
+
+/**
+ * Map raw database facet counts to the ordered public facet contract. Enum
+ * facets follow the canonical client-safe declaration order; brand facets are
+ * ordered by count then label then slug. Numeric ranges pass through unchanged.
+ */
+export function toVehicleFacets(
+  raw: RawVehicleFacets,
+  filters: NormalizedVehicleFilters,
+): VehicleFacets {
+  return {
+    brand: orderBrandFacet(raw.brand, filters.brand),
+    bodyType: orderEnumFacet(BODY_TYPES, raw.bodyType, filters.bodyType),
+    condition: orderEnumFacet(
+      VEHICLE_CONDITIONS,
+      raw.condition,
+      filters.condition,
+    ),
+    transmission: orderEnumFacet(
+      TRANSMISSIONS,
+      raw.transmission,
+      filters.transmission,
+    ),
+    fuelType: orderEnumFacet(FUEL_TYPES, raw.fuelType, filters.fuelType),
+    drivetrain: orderEnumFacet(DRIVETRAINS, raw.drivetrain, filters.drivetrain),
+    driverOption: orderEnumFacet(
+      DRIVER_OPTIONS,
+      raw.driverOption,
+      filters.driverOption,
+    ),
+    year: raw.year,
+    price: raw.price,
+  };
+}
 
 type ImageRecord = VehiclePublicCardRecord["images"][number];
 

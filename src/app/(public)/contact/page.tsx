@@ -10,14 +10,17 @@ import type { Metadata } from "next";
 
 import { Container } from "@/components/layout/container";
 import { parseOpeningHours, parseSocialLinks } from "@/lib/public-contact";
-import { publicUrl } from "@/lib/public-metadata";
+import { publicPageMetadata } from "@/lib/public-metadata";
 import { getPublicSettingsPresentation } from "@/server/settings/public-presentation";
 
-export const metadata: Metadata = {
-  title: "Contact",
-  description: "Contact Crown and Royal Rides about vehicle sales and rentals.",
-  alternates: { canonical: publicUrl("/contact") },
-};
+export function generateMetadata(): Metadata {
+  return publicPageMetadata({
+    path: "/contact",
+    title: "Contact",
+    description:
+      "Contact Crown and Royal Rides about vehicle sales and rentals.",
+  });
+}
 
 const contactClass =
   "flex min-h-11 items-center gap-3 rounded-md text-sm font-medium break-all outline-none hover:text-brand-gold-foreground focus-visible:ring-2 focus-visible:ring-ring";

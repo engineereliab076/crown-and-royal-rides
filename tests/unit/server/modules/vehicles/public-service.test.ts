@@ -5,6 +5,7 @@ import type {
   PublicVehicleRepository,
   VehiclePublicCardRecord,
   VehiclePublicDetailRecord,
+  VehicleSitemapRecord,
 } from "@/server/modules/vehicles/public-repository";
 
 function cardRecord(
@@ -69,24 +70,101 @@ function fakeRepository(
     listRentalStrip: vi.fn().mockResolvedValue([]),
     getDetailBySlug: vi.fn().mockResolvedValue(null),
     listRelated: vi.fn().mockResolvedValue([]),
+    searchVehicles: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    getVehicleFacets: vi.fn().mockResolvedValue(emptyRawFacets()),
+    listSitemapCandidates: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
+
+function emptyRawFacets() {
+  return {
+    brand: [],
+    bodyType: [],
+    condition: [],
+    transmission: [],
+    fuelType: [],
+    drivetrain: [],
+    driverOption: [],
+    year: null,
+    price: null,
+  };
+}
+
+describe("public vehicle catalogue service — sitemap", () => {
+  it("includes only centrally indexable candidates", async () => {
+    const candidates = [
+      {
+        slug: "active-sale",
+        listingState: "published",
+        isForSale: true,
+        saleStatus: "available",
+        salePrice: BigInt(10),
+        isForRent: false,
+        rentalStatus: null,
+        rentalDailyPrice: null,
+        minRentalDays: null,
+      },
+      {
+        slug: "sold-history",
+        listingState: "published",
+        isForSale: true,
+        saleStatus: "sold",
+        salePrice: BigInt(10),
+        isForRent: false,
+        rentalStatus: null,
+        rentalDailyPrice: null,
+        minRentalDays: null,
+      },
+      {
+        slug: "rented-only",
+        listingState: "published",
+        isForSale: false,
+        saleStatus: null,
+        salePrice: null,
+        isForRent: true,
+        rentalStatus: "rented",
+        rentalDailyPrice: BigInt(10),
+        minRentalDays: 1,
+      },
+      {
+        slug: "archived",
+        listingState: "archived",
+        isForSale: true,
+        saleStatus: "available",
+        salePrice: BigInt(10),
+        isForRent: false,
+        rentalStatus: null,
+        rentalDailyPrice: null,
+        minRentalDays: null,
+      },
+    ] as VehicleSitemapRecord[];
+    const service = createPublicVehicleService({
+      repository: fakeRepository({
+        listSitemapCandidates: vi.fn().mockResolvedValue(candidates),
+      }),
+    });
+
+    await expect(service.listIndexableSlugs()).resolves.toEqual([
+      "active-sale",
+    ]);
+  });
+});
 
 describe("public vehicle catalogue service — pagination", () => {
   it("requests page 1 with the fixed page size and shapes the result", async () => {
     const listActiveCatalogue = vi
       .fn()
-      .mockResolvedValue({ items: [cardRecord()], total: 25 });
+      .mockResolvedValue({ items: [cardRecord()], total: 60 });
     const service = createPublicVehicleService({
       repository: fakeRepository({ listActiveCatalogue }),
     });
     const page = await service.listActiveCatalogue(2);
-    expect(listActiveCatalogue).toHaveBeenCalledWith({ page: 2, pageSize: 12 });
+    expect(listActiveCatalogue).toHaveBeenCalledWith({ page: 2, pageSize: 24 });
     expect(page).toMatchObject({
       page: 2,
-      pageSize: 12,
-      totalItems: 25,
+      pageSize: 24,
+      totalItems: 60,
       totalPages: 3,
       hasPreviousPage: true,
       hasNextPage: true,
@@ -105,7 +183,7 @@ describe("public vehicle catalogue service — pagination", () => {
     await service.listSaleCatalogue(-5);
     await service.listSaleCatalogue(Number.NaN);
     for (const call of listSaleCatalogue.mock.calls) {
-      expect(call[0]).toEqual({ page: 1, pageSize: 12 });
+      expect(call[0]).toEqual({ page: 1, pageSize: 24 });
     }
   });
 });

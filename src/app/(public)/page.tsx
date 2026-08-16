@@ -8,9 +8,11 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { JsonLd } from "@/components/json-ld";
 import { Container } from "@/components/layout/container";
 import { VehicleGrid } from "@/components/vehicles/vehicle-grid";
-import { publicUrl } from "@/lib/public-metadata";
+import { publicPageMetadata, publicUrl } from "@/lib/public-metadata";
+import { buildBusinessStructuredData } from "@/lib/structured-data";
 import {
   getCachedFeatured,
   getCachedRentalStrip,
@@ -19,12 +21,14 @@ import {
 import { getPublicSettingsPresentation } from "@/server/settings/public-presentation";
 import { getPublicCatalogueService } from "@/server/vehicles/services";
 
-export const metadata: Metadata = {
-  title: "Vehicle sales and rentals in Tanzania",
-  description:
-    "Browse carefully presented vehicles for sale and rent with direct local assistance.",
-  alternates: { canonical: publicUrl("/") },
-};
+export function generateMetadata(): Metadata {
+  return publicPageMetadata({
+    path: "/",
+    title: "Vehicle sales and rentals in Tanzania",
+    description:
+      "Browse carefully presented vehicles for sale and rent with direct local assistance.",
+  });
+}
 
 const linkButton =
   "inline-flex min-h-11 items-center justify-center rounded-lg px-5 py-3 text-sm font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring";
@@ -55,9 +59,14 @@ export default async function HomePage() {
     getCachedRentalStrip(() => service.listRentalStrip()),
   ]);
   const heroVehicle = featured.find((vehicle) => vehicle.coverImage !== null);
+  const businessStructuredData = buildBusinessStructuredData({
+    settings,
+    canonicalUrl: publicUrl("/").toString(),
+  });
 
   return (
     <main id="main-content" className="flex-1">
+      <JsonLd data={businessStructuredData} />
       <section className="overflow-hidden border-b bg-primary text-primary-foreground">
         <Container className="grid min-h-[34rem] items-stretch gap-10 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-16">
           <div className="flex max-w-2xl flex-col justify-center">

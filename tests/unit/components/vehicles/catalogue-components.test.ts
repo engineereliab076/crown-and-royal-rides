@@ -38,6 +38,15 @@ describe("VehicleCard", () => {
     expect(source).toContain("focus-visible:ring");
   });
 
+  it("uses level-two card headings beneath the catalogue page heading", () => {
+    expect(source).toContain(
+      '<h2 className="text-base font-semibold text-balance">',
+    );
+    expect(source).not.toContain(
+      '<h3 className="text-base font-semibold text-balance">',
+    );
+  });
+
   it("delegates status and price to the centralized components", () => {
     expect(source).toContain("VehicleStatusBadge");
     expect(source).toContain("PriceDisplay");
@@ -158,13 +167,60 @@ describe("shared empty state and pagination", () => {
     expect(source).toContain('role="status"');
   });
 
-  it("pagination emits page-only URLs and meets the touch target", () => {
+  it("pagination preserves normalized filters and meets the touch target", () => {
     const source = read("src/components/vehicles/catalogue-pagination.tsx");
-    // The only URL template is page-only: no query concatenation, no filters.
-    expect(source).toContain("`${basePath}?page=${page}`");
-    expect(source).not.toMatch(/\?page=[^`"']*&/);
-    expect(source).not.toMatch(/search=|filter=|sort=/);
+    expect(source).toContain("catalogueHref(basePath");
+    expect(source).toContain("appliedFilters");
+    expect(source).toContain('aria-current={pageNumber === page ? "page"');
     expect(source).toContain("h-11");
     expect(source).toContain('aria-label="Catalogue pagination"');
+  });
+
+  it("keeps disabled pagination text on the accessible semantic token", () => {
+    const source = read("src/components/vehicles/catalogue-pagination.tsx");
+    expect(source).toContain('"cursor-not-allowed text-muted-foreground"');
+    expect(source).not.toContain("opacity-40");
+  });
+});
+
+describe("Phase 7 catalogue controls", () => {
+  const filters = read("src/components/vehicles/catalogue-filters.tsx");
+  const chips = read("src/components/vehicles/active-filter-chips.tsx");
+
+  it("offers every supported public filter without status controls", () => {
+    for (const name of [
+      'name="q"',
+      'name="brand"',
+      'name="bodyType"',
+      'name="condition"',
+      'name="transmission"',
+      'name="fuelType"',
+      'name="drivetrain"',
+      'name="driverOption"',
+      'name="yearMin"',
+      'name="yearMax"',
+      'name="priceMin"',
+      'name="priceMax"',
+      'name="sort"',
+    ]) {
+      expect(filters).toContain(name);
+    }
+    expect(filters).not.toContain('name="saleStatus"');
+    expect(filters).not.toContain('name="rentalStatus"');
+  });
+
+  it("uses the accessible sheet, exact applied count rule, and no result fetch", () => {
+    expect(filters).toContain("<Sheet");
+    expect(filters).toContain("draftChanged");
+    expect(filters).toContain('"Apply filters"');
+    expect(filters).toContain("props.totalItems");
+    expect(filters).not.toMatch(/fetch\(|axios|localStorage|sessionStorage/);
+  });
+
+  it("builds keyboard-sized remove links from normalized state", () => {
+    expect(chips).toContain("catalogueHref(pathname");
+    expect(chips).toContain("aria-label={`Remove ${chip.label}`}");
+    expect(chips).toContain("min-h-11");
+    expect(chips).not.toContain("ignoredFilters");
   });
 });

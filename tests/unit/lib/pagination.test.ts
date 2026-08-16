@@ -41,26 +41,26 @@ describe("normalizePageParam", () => {
 });
 
 describe("buildPaginatedResult", () => {
-  it("fixes the public page size at 12", () => {
-    expect(PUBLIC_PAGE_SIZE).toBe(12);
+  it("fixes the public page size at 24", () => {
+    expect(PUBLIC_PAGE_SIZE).toBe(24);
     const result = buildPaginatedResult({
       items: [],
       page: 1,
       totalItems: 0,
     });
-    expect(result.pageSize).toBe(12);
+    expect(result.pageSize).toBe(24);
   });
 
   it("derives totals and navigation flags at the first boundary", () => {
     const result = buildPaginatedResult({
-      items: new Array(12).fill(0),
+      items: new Array(24).fill(0),
       page: 1,
-      totalItems: 30,
+      totalItems: 50,
     });
     expect(result).toMatchObject({
       page: 1,
-      pageSize: 12,
-      totalItems: 30,
+      pageSize: 24,
+      totalItems: 50,
       totalPages: 3,
       hasPreviousPage: false,
       hasNextPage: true,
@@ -69,9 +69,9 @@ describe("buildPaginatedResult", () => {
 
   it("derives navigation flags at the last boundary", () => {
     const result = buildPaginatedResult({
-      items: new Array(6).fill(0),
+      items: new Array(2).fill(0),
       page: 3,
-      totalItems: 30,
+      totalItems: 50,
     });
     expect(result).toMatchObject({
       page: 3,
@@ -94,7 +94,7 @@ describe("buildPaginatedResult", () => {
     const result = buildPaginatedResult({
       items: [],
       page: 5,
-      totalItems: 30,
+      totalItems: 50,
     });
     expect(result.hasNextPage).toBe(false);
     expect(result.hasPreviousPage).toBe(true);

@@ -1,14 +1,13 @@
 /**
- * Strict public pagination contract (Phase 6).
+ * Strict public pagination contract (Phase 6; page size fixed at 24 in Phase 7).
  *
- * The public catalogue uses a fixed page size and a `page`-only URL surface;
- * search and filters are deferred to Phase 7 and must not be introduced here.
- * These helpers are pure and client-safe so route/page components and the
- * server service share one normalization and shape.
+ * The public catalogue uses a single fixed page size across every device and
+ * route. These helpers are pure and client-safe so route/page components and
+ * the server service share one normalization and shape.
  */
 
-/** The fixed public catalogue page size. */
-export const PUBLIC_PAGE_SIZE = 12;
+/** The fixed public catalogue page size (Phase 7: exactly 24, every device). */
+export const PUBLIC_PAGE_SIZE = 24;
 
 /** A page of already-mapped items plus deterministic navigation metadata. */
 export interface PaginatedResult<T> {
